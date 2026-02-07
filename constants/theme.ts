@@ -1,53 +1,82 @@
 /**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
+ * Going Places — Warm travel editorial aesthetic
+ * Cream backgrounds, terracotta accents, refined typography
+ * Light mode only for hackathon demo
  */
 
 import { Platform } from 'react-native';
 
-const tintColorLight = '#0a7ea4';
-const tintColorDark = '#fff';
-
+// Primary palette — warm, inviting, travel-inspired
 export const Colors = {
   light: {
-    text: '#11181C',
-    background: '#fff',
-    tint: tintColorLight,
-    icon: '#687076',
-    tabIconDefault: '#687076',
-    tabIconSelected: tintColorLight,
+    background: '#F8F6F2',
+    backgroundElevated: '#FFFFFF',
+    surface: '#FFFFFF',
+    surfaceMuted: '#F0EDE8',
+    text: '#1C1C1E',
+    textSecondary: '#6B6B6F',
+    textTertiary: '#8E8E93',
+    tint: '#C45C3E',
+    accent: '#C45C3E',
+    accentMuted: '#E8A68A',
+    success: '#5B8A72',
+    warning: '#D4A054',
+    border: '#E5E2DD',
+    borderLight: '#EDEBE7',
+    icon: '#6B6B6F',
+    tabIconDefault: '#8E8E93',
+    tabIconSelected: '#C45C3E',
   },
   dark: {
-    text: '#ECEDEE',
-    background: '#151718',
-    tint: tintColorDark,
-    icon: '#9BA1A6',
-    tabIconDefault: '#9BA1A6',
-    tabIconSelected: tintColorDark,
+    // Fallback for system dark mode — still warm
+    background: '#1C1B19',
+    backgroundElevated: '#252422',
+    surface: '#2D2C2A',
+    surfaceMuted: '#252422',
+    text: '#F5F3F0',
+    textSecondary: '#A8A6A3',
+    textTertiary: '#7A7875',
+    tint: '#E8A68A',
+    accent: '#E8A68A',
+    accentMuted: '#C45C3E',
+    success: '#7BA88E',
+    warning: '#E4B87A',
+    border: '#3D3B38',
+    borderLight: '#353330',
+    icon: '#A8A6A3',
+    tabIconDefault: '#7A7875',
+    tabIconSelected: '#E8A68A',
   },
+};
+
+export const Spacing = {
+  xs: 4,
+  sm: 8,
+  md: 16,
+  lg: 24,
+  xl: 32,
+  xxl: 48,
+};
+
+export const Radius = {
+  sm: 8,
+  md: 12,
+  lg: 16,
+  xl: 20,
+  full: 9999,
 };
 
 export const Fonts = Platform.select({
   ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
-    sans: 'system-ui',
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
-    serif: 'ui-serif',
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
-    rounded: 'ui-rounded',
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
-    mono: 'ui-monospace',
+    display: 'System',
+    body: 'System',
+    rounded: 'System',
+    mono: 'Menlo',
   },
   default: {
-    sans: 'normal',
-    serif: 'serif',
-    rounded: 'normal',
+    display: 'System',
+    body: 'System',
+    rounded: 'System',
     mono: 'monospace',
-  },
-  web: {
-    sans: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-    serif: "Georgia, 'Times New Roman', serif",
-    rounded: "'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif",
-    mono: "SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
   },
 });
