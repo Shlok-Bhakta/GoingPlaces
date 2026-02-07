@@ -1,16 +1,48 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, Switch } from 'react-native';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, Spacing, Radius } from '@/constants/theme';
+import { Spacing, Radius } from '@/constants/theme';
 import { useUser } from '@/contexts/user-context';
 import { useTheme } from '@/contexts/theme-context';
+
+const NOTIFICATIONS_STORAGE_KEY = '@goingplaces_notifications';
+
+type NotificationPreference = 'all' | 'trips' | 'none';
+
+const NOTIFICATION_OPTIONS: { value: NotificationPreference; label: string }[] = [
+  { value: 'all', label: 'All notifications' },
+  { value: 'trips', label: 'Trip updates only' },
+  { value: 'none', label: 'Off' },
+];
+
+function getNotificationLabel(value: NotificationPreference): string {
+  return NOTIFICATION_OPTIONS.find((o) => o.value === value)?.label ?? 'Trip updates only';
+}
 
 export default function ProfileScreen() {
   const { user } = useUser();
   const { colorScheme, colors, toggleTheme } = useTheme();
+  const [notificationPref, setNotificationPref] = useState<NotificationPreference>('trips');
+  const [notificationsExpanded, setNotificationsExpanded] = useState(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem(NOTIFICATIONS_STORAGE_KEY).then((stored) => {
+      if (stored === 'all' || stored === 'trips' || stored === 'none') {
+        setNotificationPref(stored);
+      }
+    });
+  }, []);
+
+  const setNotificationPreference = (value: NotificationPreference) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setNotificationPref(value);
+    AsyncStorage.setItem(NOTIFICATIONS_STORAGE_KEY, value);
+    setNotificationsExpanded(false);
+  };
 
   const displayName = user
     ? [user.firstName, user.lastName].filter(Boolean).join(' ')
@@ -33,24 +65,67 @@ export default function ProfileScreen() {
       <Animated.View entering={FadeInDown.delay(150).springify()}>
         <Text style={[styles.sectionTitle, { color: colors.text }]}>Settings</Text>
         <View style={[styles.settingsCard, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
-          <SettingRow
-            icon="paperplane.fill"
-            label="Notifications"
-            sublabel="Trip updates and reminders"
-          />
+          <Pressable
+            style={({ pressed }) => [styles.settingRow, pressed && styles.rowPressed]}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setNotificationsExpanded((e) => !e);
+            }}>
+            <IconSymbol name="paperplane.fill" size={20} color={colors.textSecondary} />
+            <View style={styles.settingContent}>
+              <Text style={[styles.settingLabel, { color: colors.text }]}>Notifications</Text>
+              <Text style={[styles.settingSublabel, { color: colors.textSecondary }]}>
+                {getNotificationLabel(notificationPref)}
+              </Text>
+            </View>
+            <IconSymbol
+              name="chevron.right"
+              size={16}
+              color={colors.textTertiary}
+              style={{ transform: [{ rotate: notificationsExpanded ? '90deg' : '0deg' }] }}
+            />
+          </Pressable>
+          {notificationsExpanded && (
+            <View style={[styles.notificationOptions, { borderTopColor: colors.borderLight }]}>
+              {NOTIFICATION_OPTIONS.map((opt) => (
+                <Pressable
+                  key={opt.value}
+                  style={({ pressed }) => [
+                    styles.notificationOption,
+                    { backgroundColor: pressed ? colors.surfaceMuted : undefined },
+                  ]}
+                  onPress={() => setNotificationPreference(opt.value)}>
+                  <Text style={[styles.notificationOptionLabel, { color: colors.text }]}>{opt.label}</Text>
+                  {notificationPref === opt.value && (
+                    <IconSymbol name="checkmark" size={20} color={colors.tint} />
+                  )}
+                </Pressable>
+              ))}
+            </View>
+          )}
           <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
-          <SettingRow
-            icon="map.fill"
-            label="Default maps app"
-            sublabel="Apple Maps"
-          />
-          <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
-          <SettingRow
-            icon="person.fill"
-            label="Theme"
-            sublabel={colorScheme === 'light' ? 'Light' : 'Dark'}
-            onPress={toggleTheme}
-          />
+          <View style={styles.settingRow}>
+            <IconSymbol
+              name="person.fill"
+              size={20}
+              color={colors.textSecondary}
+            />
+            <View style={styles.settingContent}>
+              <Text style={[styles.settingLabel, { color: colors.text }]}>Theme</Text>
+              <Text style={[styles.settingSublabel, { color: colors.textSecondary }]}>
+                {colorScheme === 'light' ? 'Light' : 'Dark'}
+              </Text>
+            </View>
+            <Switch
+              value={colorScheme === 'dark'}
+              onValueChange={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                toggleTheme();
+              }}
+              trackColor={{ false: colors.borderLight, true: colors.accentMuted }}
+              thumbColor={colorScheme === 'dark' ? colors.tint : colors.surface}
+            />
+          </View>
         </View>
       </Animated.View>
     </ScrollView>
@@ -158,5 +233,21 @@ const styles = StyleSheet.create({
   divider: {
     height: 1,
     marginLeft: Spacing.md + 20 + Spacing.md,
+  },
+  notificationOptions: {
+    borderTopWidth: 1,
+    paddingLeft: Spacing.md + 20 + Spacing.md,
+  },
+  notificationOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: Spacing.sm,
+    paddingRight: Spacing.md,
+    paddingLeft: Spacing.sm,
+  },
+  notificationOptionLabel: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 15,
   },
 });

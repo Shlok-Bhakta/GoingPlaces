@@ -27,10 +27,11 @@ function createStyles(colors: typeof Colors.light) {
     header: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingTop: 56,
+      paddingTop: 10,
       paddingHorizontal: Spacing.md,
-      paddingBottom: Spacing.sm,
-      backgroundColor: colors.background,
+      paddingBottom: 8,
+      minHeight: 30,
+      overflow: 'hidden',
       borderBottomWidth: 1,
       borderBottomColor: colors.borderLight,
     },
@@ -41,15 +42,23 @@ function createStyles(colors: typeof Colors.light) {
       fontSize: 18,
       color: colors.text,
     },
+    tripNameOnGradient: {
+      fontFamily: 'Fraunces_600SemiBold',
+      fontSize: 18,
+      color: '#FFFFFF',
+    },
     tripDestination: {
       fontFamily: 'DMSans_400Regular',
       fontSize: 13,
       color: colors.textSecondary,
       marginTop: 2,
     },
-    inviteBtn: { padding: Spacing.sm },
-    cover: { height: 100, overflow: 'hidden' },
-    coverGradient: { flex: 1 },
+    tripDestinationOnGradient: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: 'rgba(255,255,255,0.9)',
+      marginTop: 2,
+    },
     tabScroll: {
       maxHeight: 48,
       borderBottomWidth: 1,
@@ -226,36 +235,26 @@ export default function TripDetailScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
+        <LinearGradient
+          colors={['#E8A68A', '#C45C3E']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
         <Pressable
           style={styles.backBtn}
           onPress={handleBack}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           accessibilityRole="button"
           accessibilityLabel="Go back">
-          <IconSymbol name="chevron.left" size={20} color={colors.text} />
+          <IconSymbol name="chevron.left" size={20} color="#FFFFFF" />
         </Pressable>
         <View style={styles.headerContent}>
-          <Text style={styles.tripName} numberOfLines={1}>
+          <Text style={styles.tripNameOnGradient} numberOfLines={1}>
             {trip.name}
           </Text>
-          <Text style={styles.tripDestination}>{trip.destination}</Text>
+          <Text style={styles.tripDestinationOnGradient}>{trip.destination}</Text>
         </View>
-        <Pressable
-          style={styles.inviteBtn}
-          onPress={() =>
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-          }>
-          <IconSymbol name="paperplane.fill" size={18} color={colors.tint} />
-        </Pressable>
-      </View>
-
-      <View style={styles.cover}>
-        <LinearGradient
-          colors={['#E8A68A', '#C45C3E']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.coverGradient}
-        />
       </View>
 
       <ScrollView

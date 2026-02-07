@@ -19,6 +19,7 @@ const MAPPING: Partial<Record<string, ComponentProps<typeof MaterialIcons>['name
   'chevron.left': 'chevron-left',
   'chevron.right': 'chevron-right',
   'xmark': 'close',
+  'checkmark': 'check',
 };
 
 /**
