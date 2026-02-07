@@ -15,6 +15,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { TripMapView } from '@/components/TripMapView';
 import { Colors, Spacing, Radius } from '@/constants/theme';
 import { useTrips } from '@/contexts/trips-context';
 
@@ -214,18 +215,7 @@ export default function TripDetailScreen() {
 
       {activeTab === 'Map' && (
         <View style={styles.mapContainer}>
-          <View style={styles.mapPlaceholder}>
-            <IconSymbol
-              name="map.fill"
-              size={48}
-              color={Colors.light.textTertiary}
-            />
-            <Text style={styles.mapPlaceholderTitle}>Map</Text>
-            <Text style={styles.mapPlaceholderText}>
-              Run a development build for live maps:{'\n'}
-              npx expo run:ios
-            </Text>
-          </View>
+          <TripMapView trip={trip} />
         </View>
       )}
 
@@ -419,27 +409,6 @@ const styles = StyleSheet.create({
   },
   mapContainer: {
     flex: 1,
-  },
-  mapPlaceholder: {
-    flex: 1,
-    backgroundColor: Colors.light.surfaceMuted,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Spacing.xl,
-  },
-  mapPlaceholderTitle: {
-    fontFamily: 'Fraunces_600SemiBold',
-    fontSize: 20,
-    color: Colors.light.text,
-    marginTop: Spacing.md,
-  },
-  mapPlaceholderText: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 13,
-    color: Colors.light.textSecondary,
-    textAlign: 'center',
-    marginTop: Spacing.sm,
-    lineHeight: 20,
   },
   errorText: {
     fontFamily: 'DMSans_400Regular',

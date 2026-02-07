@@ -10,9 +10,16 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "config": {"googleMapsApiKey": "YOUR_GOOGLE_MAPS_API_KEY"}
+      "config": {
+        "googleMapsApiKey": "AIzaSyAYWyvDaXshtlIzc-lEdpQ17JuF8oyn4dQ"
+      }
     },
     "android": {
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyAYWyvDaXshtlIzc-lEdpQ17JuF8oyn4dQ"
+        }
+      },
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
