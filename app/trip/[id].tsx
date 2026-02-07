@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -17,14 +17,169 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Spacing, Radius } from '@/constants/theme';
 import { useTrips } from '@/contexts/trips-context';
+import { useTheme } from '@/contexts/theme-context';
 
 const TABS = ['Chat', 'Plan', 'Costs', 'Map', 'Album'] as const;
+
+function createStyles(colors: typeof Colors.light) {
+  return StyleSheet.create({
+    container: { flex: 1, backgroundColor: colors.background },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingTop: 56,
+      paddingHorizontal: Spacing.md,
+      paddingBottom: Spacing.sm,
+      backgroundColor: colors.background,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.borderLight,
+    },
+    backBtn: { padding: Spacing.sm, marginLeft: -Spacing.sm },
+    headerContent: { flex: 1, marginLeft: Spacing.sm },
+    tripName: {
+      fontFamily: 'Fraunces_600SemiBold',
+      fontSize: 18,
+      color: colors.text,
+    },
+    tripDestination: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: colors.textSecondary,
+      marginTop: 2,
+    },
+    inviteBtn: { padding: Spacing.sm },
+    cover: { height: 100, overflow: 'hidden' },
+    coverGradient: { flex: 1 },
+    tabScroll: {
+      maxHeight: 48,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.borderLight,
+    },
+    tabScrollContent: {
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      gap: Spacing.sm,
+    },
+    tab: {
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.full,
+    },
+    tabActive: { backgroundColor: colors.accentMuted },
+    tabText: {
+      fontFamily: 'DMSans_500Medium',
+      fontSize: 14,
+      color: colors.textSecondary,
+    },
+    tabTextActive: { color: colors.tint, fontFamily: 'DMSans_600SemiBold' },
+    chatContainer: { flex: 1 },
+    messagesScroll: { flex: 1 },
+    messagesContent: { padding: Spacing.lg, paddingBottom: Spacing.xl },
+    messageRow: { marginBottom: Spacing.md },
+    messageRowUser: { alignItems: 'flex-end' },
+    messageRowAI: { alignItems: 'flex-start' },
+    messageBubble: { maxWidth: '85%', padding: Spacing.md, borderRadius: Radius.lg },
+    bubbleUser: { backgroundColor: colors.tint, borderBottomRightRadius: 4 },
+    bubbleAI: { backgroundColor: colors.surfaceMuted, borderBottomLeftRadius: 4 },
+    messageName: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 12,
+      color: colors.tint,
+      marginBottom: 4,
+    },
+    messageText: { fontFamily: 'DMSans_400Regular', fontSize: 15 },
+    messageTextUser: { color: '#FFFFFF' },
+    messageTextAI: { color: colors.text },
+    inputRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-end',
+      padding: Spacing.md,
+      paddingBottom: 40,
+      gap: Spacing.sm,
+      backgroundColor: colors.background,
+      borderTopWidth: 1,
+      borderTopColor: colors.borderLight,
+    },
+    input: {
+      flex: 1,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 16,
+      color: colors.text,
+      backgroundColor: colors.surface,
+      borderRadius: Radius.lg,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      maxHeight: 100,
+    },
+    sendBtn: {
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      backgroundColor: colors.tint,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    sendBtnPressed: { opacity: 0.9 },
+    tabContent: { flex: 1 },
+    tabContentInner: { padding: Spacing.lg, paddingBottom: 120 },
+    placeholderTitle: {
+      fontFamily: 'Fraunces_600SemiBold',
+      fontSize: 20,
+      color: colors.text,
+      marginBottom: Spacing.sm,
+    },
+    placeholderText: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 15,
+      color: colors.textSecondary,
+      lineHeight: 22,
+    },
+    mapContainer: { flex: 1 },
+    mapPlaceholder: {
+      flex: 1,
+      backgroundColor: colors.surfaceMuted,
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: Spacing.xl,
+    },
+    mapPlaceholderTitle: {
+      fontFamily: 'Fraunces_600SemiBold',
+      fontSize: 20,
+      color: colors.text,
+      marginTop: Spacing.md,
+    },
+    mapPlaceholderText: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: colors.textSecondary,
+      textAlign: 'center',
+      marginTop: Spacing.sm,
+      lineHeight: 20,
+    },
+    errorText: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 16,
+      color: colors.text,
+      textAlign: 'center',
+      marginTop: 100,
+    },
+    backLink: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 16,
+      color: colors.tint,
+      textAlign: 'center',
+      marginTop: Spacing.md,
+    },
+  });
+}
 
 export default function TripDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { getTrip } = useTrips();
+  const { colors } = useTheme();
   const trip = id ? getTrip(id) : null;
+  const styles = useMemo(() => createStyles(colors), [colors]);
 
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
   const [message, setMessage] = useState('');
@@ -38,11 +193,20 @@ export default function TripDetailScreen() {
     },
   ]);
 
+  const handleBack = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/trips');
+    }
+  };
+
   if (!trip) {
     return (
       <View style={styles.container}>
         <Text style={styles.errorText}>Trip not found</Text>
-        <Pressable onPress={() => router.back()}>
+        <Pressable onPress={handleBack}>
           <Text style={styles.backLink}>Go back</Text>
         </Pressable>
       </View>
@@ -64,11 +228,11 @@ export default function TripDetailScreen() {
       <View style={styles.header}>
         <Pressable
           style={styles.backBtn}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.back();
-          }}>
-          <IconSymbol name="chevron.left" size={20} color={Colors.light.text} />
+          onPress={handleBack}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          accessibilityRole="button"
+          accessibilityLabel="Go back">
+          <IconSymbol name="chevron.left" size={20} color={colors.text} />
         </Pressable>
         <View style={styles.headerContent}>
           <Text style={styles.tripName} numberOfLines={1}>
@@ -81,7 +245,7 @@ export default function TripDetailScreen() {
           onPress={() =>
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
           }>
-          <IconSymbol name="paperplane.fill" size={18} color={Colors.light.tint} />
+          <IconSymbol name="paperplane.fill" size={18} color={colors.tint} />
         </Pressable>
       </View>
 
@@ -161,7 +325,7 @@ export default function TripDetailScreen() {
             <TextInput
               style={styles.input}
               placeholder="Message..."
-              placeholderTextColor={Colors.light.textTertiary}
+              placeholderTextColor={colors.textTertiary}
               value={message}
               onChangeText={setMessage}
               multiline
@@ -218,7 +382,7 @@ export default function TripDetailScreen() {
             <IconSymbol
               name="map.fill"
               size={48}
-              color={Colors.light.textTertiary}
+              color={colors.textTertiary}
             />
             <Text style={styles.mapPlaceholderTitle}>Map</Text>
             <Text style={styles.mapPlaceholderText}>
@@ -246,213 +410,3 @@ export default function TripDetailScreen() {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.light.background,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: 56,
-    paddingHorizontal: Spacing.md,
-    paddingBottom: Spacing.sm,
-    backgroundColor: Colors.light.background,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
-  },
-  backBtn: {
-    padding: Spacing.sm,
-    marginLeft: -Spacing.sm,
-  },
-  headerContent: {
-    flex: 1,
-    marginLeft: Spacing.sm,
-  },
-  tripName: {
-    fontFamily: 'Fraunces_600SemiBold',
-    fontSize: 18,
-    color: Colors.light.text,
-  },
-  tripDestination: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 13,
-    color: Colors.light.textSecondary,
-    marginTop: 2,
-  },
-  inviteBtn: {
-    padding: Spacing.sm,
-  },
-  cover: {
-    height: 100,
-    overflow: 'hidden',
-  },
-  coverGradient: {
-    flex: 1,
-  },
-  tabScroll: {
-    maxHeight: 48,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
-  },
-  tabScrollContent: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    gap: Spacing.sm,
-  },
-  tab: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.full,
-  },
-  tabActive: {
-    backgroundColor: Colors.light.accentMuted,
-  },
-  tabText: {
-    fontFamily: 'DMSans_500Medium',
-    fontSize: 14,
-    color: Colors.light.textSecondary,
-  },
-  tabTextActive: {
-    color: Colors.light.tint,
-    fontFamily: 'DMSans_600SemiBold',
-  },
-  chatContainer: {
-    flex: 1,
-  },
-  messagesScroll: {
-    flex: 1,
-  },
-  messagesContent: {
-    padding: Spacing.lg,
-    paddingBottom: Spacing.xl,
-  },
-  messageRow: {
-    marginBottom: Spacing.md,
-  },
-  messageRowUser: {
-    alignItems: 'flex-end',
-  },
-  messageRowAI: {
-    alignItems: 'flex-start',
-  },
-  messageBubble: {
-    maxWidth: '85%',
-    padding: Spacing.md,
-    borderRadius: Radius.lg,
-  },
-  bubbleUser: {
-    backgroundColor: Colors.light.tint,
-    borderBottomRightRadius: 4,
-  },
-  bubbleAI: {
-    backgroundColor: Colors.light.surfaceMuted,
-    borderBottomLeftRadius: 4,
-  },
-  messageName: {
-    fontFamily: 'DMSans_600SemiBold',
-    fontSize: 12,
-    color: Colors.light.tint,
-    marginBottom: 4,
-  },
-  messageText: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 15,
-  },
-  messageTextUser: {
-    color: '#FFFFFF',
-  },
-  messageTextAI: {
-    color: Colors.light.text,
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    padding: Spacing.md,
-    paddingBottom: 40,
-    gap: Spacing.sm,
-    backgroundColor: Colors.light.background,
-    borderTopWidth: 1,
-    borderTopColor: Colors.light.borderLight,
-  },
-  input: {
-    flex: 1,
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 16,
-    color: Colors.light.text,
-    backgroundColor: Colors.light.surface,
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    maxHeight: 100,
-  },
-  sendBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: Colors.light.tint,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  sendBtnPressed: {
-    opacity: 0.9,
-  },
-  tabContent: {
-    flex: 1,
-  },
-  tabContentInner: {
-    padding: Spacing.lg,
-    paddingBottom: 120,
-  },
-  placeholderTitle: {
-    fontFamily: 'Fraunces_600SemiBold',
-    fontSize: 20,
-    color: Colors.light.text,
-    marginBottom: Spacing.sm,
-  },
-  placeholderText: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 15,
-    color: Colors.light.textSecondary,
-    lineHeight: 22,
-  },
-  mapContainer: {
-    flex: 1,
-  },
-  mapPlaceholder: {
-    flex: 1,
-    backgroundColor: Colors.light.surfaceMuted,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Spacing.xl,
-  },
-  mapPlaceholderTitle: {
-    fontFamily: 'Fraunces_600SemiBold',
-    fontSize: 20,
-    color: Colors.light.text,
-    marginTop: Spacing.md,
-  },
-  mapPlaceholderText: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 13,
-    color: Colors.light.textSecondary,
-    textAlign: 'center',
-    marginTop: Spacing.sm,
-    lineHeight: 20,
-  },
-  errorText: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 16,
-    color: Colors.light.text,
-    textAlign: 'center',
-    marginTop: 100,
-  },
-  backLink: {
-    fontFamily: 'DMSans_600SemiBold',
-    fontSize: 16,
-    color: Colors.light.tint,
-    textAlign: 'center',
-    marginTop: Spacing.md,
-  },
-});

@@ -1,7 +1,7 @@
 /**
  * Going Places — Warm travel editorial aesthetic
  * Cream backgrounds, terracotta accents, refined typography
- * Light mode only for hackathon demo
+ * Light and dark mode with user preference in Settings.
  */
 
 import { Platform } from 'react-native';

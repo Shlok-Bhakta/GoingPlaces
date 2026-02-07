@@ -19,11 +19,12 @@ import 'react-native-reanimated';
 
 import { UserProvider } from '@/contexts/user-context';
 import { TripsProvider } from '@/contexts/trips-context';
+import { ThemeProvider as AppThemeProvider, useTheme } from '@/contexts/theme-context';
 import { Colors } from '@/constants/theme';
 
 SplashScreen.preventAutoHideAsync();
 
-const LightTheme = {
+const LightNavTheme = {
   ...DefaultTheme,
   colors: {
     ...DefaultTheme.colors,
@@ -35,6 +36,19 @@ const LightTheme = {
   },
 };
 
+const DarkNavTheme = {
+  ...DefaultTheme,
+  dark: true,
+  colors: {
+    ...DefaultTheme.colors,
+    primary: Colors.dark.tint,
+    background: Colors.dark.background,
+    card: Colors.dark.backgroundElevated,
+    text: Colors.dark.text,
+    border: Colors.dark.border,
+  },
+};
+
 function RootLayoutNav() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
@@ -43,6 +57,21 @@ function RootLayoutNav() {
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="trip/[id]" />
     </Stack>
+  );
+}
+
+function ThemedRoot() {
+  const { colorScheme } = useTheme();
+  const navTheme = colorScheme === 'dark' ? DarkNavTheme : LightNavTheme;
+  return (
+    <ThemeProvider value={navTheme}>
+      <UserProvider>
+        <TripsProvider>
+          <RootLayoutNav />
+          <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
+        </TripsProvider>
+      </UserProvider>
+    </ThemeProvider>
   );
 }
 
@@ -66,13 +95,8 @@ export default function RootLayout() {
   if (!fontsLoaded) return null;
 
   return (
-    <ThemeProvider value={LightTheme}>
-      <UserProvider>
-        <TripsProvider>
-          <RootLayoutNav />
-          <StatusBar style="dark" />
-        </TripsProvider>
-      </UserProvider>
-    </ThemeProvider>
+    <AppThemeProvider>
+      <ThemedRoot />
+    </AppThemeProvider>
   );
 }

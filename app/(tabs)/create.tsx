@@ -14,9 +14,10 @@ import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, Spacing, Radius } from '@/constants/theme';
+import { Spacing, Radius } from '@/constants/theme';
 import { useUser } from '@/contexts/user-context';
 import { useTrips } from '@/contexts/trips-context';
+import { useTheme } from '@/contexts/theme-context';
 
 const STEPS = ['Basics', 'Destination', 'Generate', 'Invite'];
 
@@ -28,6 +29,7 @@ export default function CreateTripScreen() {
   const { user } = useUser();
   const { addTrip } = useTrips();
   const router = useRouter();
+  const { colors } = useTheme();
 
   const handleNext = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -55,26 +57,26 @@ export default function CreateTripScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <View style={styles.header}>
+      <View style={[styles.header, { borderBottomColor: colors.borderLight }]}>
         <Pressable
           style={styles.closeBtn}
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             router.replace('/(tabs)');
           }}>
-          <IconSymbol name="xmark" size={20} color={Colors.light.text} />
+          <IconSymbol name="xmark" size={20} color={colors.text} />
         </Pressable>
-        <Text style={styles.headerTitle}>Create trip</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Create trip</Text>
         <View style={styles.stepDots}>
           {STEPS.map((_, i) => (
             <View
               key={i}
               style={[
                 styles.dot,
+                { backgroundColor: i === step ? colors.tint : i < step ? colors.success : colors.border },
                 i === step && styles.dotActive,
-                i < step && styles.dotDone,
               ]}
             />
           ))}
@@ -90,21 +92,21 @@ export default function CreateTripScreen() {
           <Animated.View
             entering={FadeInDown.springify()}
             style={styles.stepContent}>
-            <Text style={styles.stepTitle}>Trip basics</Text>
-            <Text style={styles.stepSubtitle}>
+            <Text style={[styles.stepTitle, { color: colors.text }]}>Trip basics</Text>
+            <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
               You can always edit these later — or skip and start chatting!
             </Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
               placeholder="Trip name"
-              placeholderTextColor={Colors.light.textTertiary}
+              placeholderTextColor={colors.textTertiary}
               value={name}
               onChangeText={setName}
             />
             <TextInput
-              style={styles.input}
+              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
               placeholder="Starting city (optional)"
-              placeholderTextColor={Colors.light.textTertiary}
+              placeholderTextColor={colors.textTertiary}
               value={startCity}
               onChangeText={setStartCity}
             />
@@ -115,14 +117,14 @@ export default function CreateTripScreen() {
           <Animated.View
             entering={FadeInDown.springify()}
             style={styles.stepContent}>
-            <Text style={styles.stepTitle}>Where to?</Text>
-            <Text style={styles.stepSubtitle}>
+            <Text style={[styles.stepTitle, { color: colors.text }]}>Where to?</Text>
+            <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
               Search for a destination or pick a mock event
             </Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
               placeholder="Destination or event"
-              placeholderTextColor={Colors.light.textTertiary}
+              placeholderTextColor={colors.textTertiary}
               value={destination}
               onChangeText={setDestination}
               autoFocus
@@ -134,12 +136,12 @@ export default function CreateTripScreen() {
           <Animated.View
             entering={FadeInDown.springify()}
             style={styles.stepContent}>
-            <Text style={styles.stepTitle}>Generate with AI</Text>
-            <Text style={styles.stepSubtitle}>
+            <Text style={[styles.stepTitle, { color: colors.text }]}>Generate with AI</Text>
+            <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
               {"We'll create a draft itinerary and suggestions based on your trip"}
             </Text>
-            <View style={styles.generatePreview}>
-              <Text style={styles.generatePlaceholder}>
+            <View style={[styles.generatePreview, { backgroundColor: colors.surfaceMuted }]}>
+              <Text style={[styles.generatePlaceholder, { color: colors.textSecondary }]}>
                 Itinerary will be generated when you open the trip and chat with
                 the AI assistant
               </Text>
@@ -151,12 +153,12 @@ export default function CreateTripScreen() {
           <Animated.View
             entering={FadeInDown.springify()}
             style={styles.stepContent}>
-            <Text style={styles.stepTitle}>Invite friends</Text>
-            <Text style={styles.stepSubtitle}>
+            <Text style={[styles.stepTitle, { color: colors.text }]}>Invite friends</Text>
+            <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
               Share a link — anyone who clicks joins the trip
             </Text>
-            <View style={styles.inviteBox}>
-              <Text style={styles.inviteLink}>goingplaces.app/join/abc123</Text>
+            <View style={[styles.inviteBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.inviteLink, { color: colors.textSecondary }]}>goingplaces.app/join/abc123</Text>
               <Pressable
                 style={styles.copyBtn}
                 onPress={() =>
@@ -164,17 +166,18 @@ export default function CreateTripScreen() {
                     Haptics.NotificationFeedbackType.Success
                   )
                 }>
-                <Text style={styles.copyBtnText}>Copy</Text>
+                <Text style={[styles.copyBtnText, { color: colors.tint }]}>Copy</Text>
               </Pressable>
             </View>
           </Animated.View>
         )}
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { borderTopColor: colors.borderLight, backgroundColor: colors.background }]}>
         <Pressable
           style={({ pressed }) => [
             styles.primaryButton,
+            { backgroundColor: colors.tint },
             pressed && styles.buttonPressed,
             !canProceed && styles.buttonDisabled,
           ]}
@@ -192,14 +195,12 @@ export default function CreateTripScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
   },
   header: {
     paddingTop: 60,
     paddingHorizontal: Spacing.lg,
     paddingBottom: Spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
   },
   closeBtn: {
     position: 'absolute',
@@ -211,7 +212,6 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 20,
-    color: Colors.light.text,
     textAlign: 'center',
   },
   stepDots: {
@@ -224,14 +224,9 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: Colors.light.border,
   },
   dotActive: {
-    backgroundColor: Colors.light.tint,
     width: 20,
-  },
-  dotDone: {
-    backgroundColor: Colors.light.success,
   },
   scroll: {
     flex: 1,
@@ -246,27 +241,21 @@ const styles = StyleSheet.create({
   stepTitle: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 24,
-    color: Colors.light.text,
   },
   stepSubtitle: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 15,
-    color: Colors.light.textSecondary,
     marginBottom: Spacing.sm,
   },
   input: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 17,
-    color: Colors.light.text,
-    backgroundColor: Colors.light.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
     borderRadius: Radius.md,
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.lg,
   },
   generatePreview: {
-    backgroundColor: Colors.light.surfaceMuted,
     borderRadius: Radius.lg,
     padding: Spacing.xl,
     minHeight: 120,
@@ -275,23 +264,19 @@ const styles = StyleSheet.create({
   generatePlaceholder: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 15,
-    color: Colors.light.textSecondary,
     textAlign: 'center',
   },
   inviteBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.light.surface,
     borderRadius: Radius.md,
     borderWidth: 1,
-    borderColor: Colors.light.border,
     paddingHorizontal: Spacing.md,
   },
   inviteLink: {
     flex: 1,
     fontFamily: 'DMSans_400Regular',
     fontSize: 14,
-    color: Colors.light.textSecondary,
     paddingVertical: Spacing.md,
   },
   copyBtn: {
@@ -301,17 +286,13 @@ const styles = StyleSheet.create({
   copyBtnText: {
     fontFamily: 'DMSans_600SemiBold',
     fontSize: 14,
-    color: Colors.light.tint,
   },
   footer: {
     padding: Spacing.lg,
     paddingBottom: 40,
     borderTopWidth: 1,
-    borderTopColor: Colors.light.borderLight,
-    backgroundColor: Colors.light.background,
   },
   primaryButton: {
-    backgroundColor: Colors.light.tint,
     paddingVertical: Spacing.md,
     borderRadius: Radius.lg,
     alignItems: 'center',

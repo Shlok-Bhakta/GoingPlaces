@@ -10,7 +10,10 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "config": {"googleMapsApiKey": "YOUR_GOOGLE_MAPS_API_KEY"}
+      "config": {
+        "googleMapsApiKey": "YOUR_GOOGLE_MAPS_API_KEY"
+      },
+      "bundleIdentifier": "com.anonymous.going-places"
     },
     "android": {
       "adaptiveIcon": {

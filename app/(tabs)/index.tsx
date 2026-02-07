@@ -19,8 +19,9 @@ import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, Spacing, Radius } from '@/constants/theme';
+import { Spacing, Radius } from '@/constants/theme';
 import { useTrips } from '@/contexts/trips-context';
+import { useTheme } from '@/contexts/theme-context';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = width * 0.75;
@@ -61,6 +62,7 @@ export default function HomeScreen() {
   const scrollY = useSharedValue(0);
   const router = useRouter();
   const { addTrip } = useTrips();
+  const { colors } = useTheme();
 
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (e) => {
@@ -83,21 +85,21 @@ export default function HomeScreen() {
     <Animated.ScrollView
       onScroll={scrollHandler}
       scrollEventThrottle={16}
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
       <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
-        <Text style={styles.greeting}>Find your next adventure</Text>
-        <View style={styles.searchRow}>
+        <Text style={[styles.greeting, { color: colors.text }]}>Find your next adventure</Text>
+        <View style={[styles.searchRow, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <IconSymbol
             name="paperplane.fill"
             size={18}
-            color={Colors.light.textTertiary}
+            color={colors.textTertiary}
           />
           <TextInput
-            style={styles.searchInput}
+            style={[styles.searchInput, { color: colors.text }]}
             placeholder="Search events, places, trips…"
-            placeholderTextColor={Colors.light.textTertiary}
+            placeholderTextColor={colors.textTertiary}
             value={searchQuery}
             onChangeText={setSearchQuery}
           />
@@ -105,7 +107,7 @@ export default function HomeScreen() {
       </Animated.View>
 
       <Animated.View entering={FadeInDown.delay(150).springify()}>
-        <Text style={styles.sectionTitle}>Recommended</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended</Text>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -145,12 +147,13 @@ export default function HomeScreen() {
       </Animated.View>
 
       <Animated.View entering={FadeInDown.delay(300).springify()}>
-        <Text style={styles.sectionTitle}>Trending trips</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Trending trips</Text>
         {MOCK_TRENDING.map((item, i) => (
           <Pressable
             key={item.id}
             style={({ pressed }) => [
               styles.trendingRow,
+              { backgroundColor: colors.surface, borderColor: colors.borderLight },
               pressed && styles.rowPressed,
             ]}
             onPress={() => {
@@ -163,19 +166,19 @@ export default function HomeScreen() {
               });
               router.push(`/trip/${tripId}`);
             }}>
-            <View style={styles.trendingIcon}>
+            <View style={[styles.trendingIcon, { backgroundColor: colors.surfaceMuted }]}>
               <Text style={styles.trendingEmoji}>🗺️</Text>
             </View>
             <View style={styles.trendingContent}>
-              <Text style={styles.trendingName}>{item.name}</Text>
-              <Text style={styles.trendingMeta}>
+              <Text style={[styles.trendingName, { color: colors.text }]}>{item.name}</Text>
+              <Text style={[styles.trendingMeta, { color: colors.textSecondary }]}>
                 {item.destination} · {item.members} members
               </Text>
             </View>
             <IconSymbol
               name="chevron.right"
               size={18}
-              color={Colors.light.textTertiary}
+              color={colors.textTertiary}
             />
           </Pressable>
         ))}
@@ -187,7 +190,6 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
   },
   content: {
     paddingTop: 60,
@@ -200,31 +202,26 @@ const styles = StyleSheet.create({
   greeting: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 26,
-    color: Colors.light.text,
     marginBottom: Spacing.md,
   },
   searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.light.surface,
     borderRadius: Radius.lg,
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     gap: Spacing.sm,
     borderWidth: 1,
-    borderColor: Colors.light.border,
   },
   searchInput: {
     flex: 1,
     fontFamily: 'DMSans_400Regular',
     fontSize: 16,
-    color: Colors.light.text,
     paddingVertical: 4,
   },
   sectionTitle: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 20,
-    color: Colors.light.text,
     marginBottom: Spacing.md,
   },
   carousel: {
@@ -275,12 +272,10 @@ const styles = StyleSheet.create({
   trendingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.light.surface,
     borderRadius: Radius.lg,
     padding: Spacing.md,
     marginBottom: Spacing.sm,
     borderWidth: 1,
-    borderColor: Colors.light.borderLight,
   },
   rowPressed: {
     opacity: 0.9,
@@ -289,7 +284,6 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: Radius.md,
-    backgroundColor: Colors.light.surfaceMuted,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: Spacing.md,
@@ -303,12 +297,10 @@ const styles = StyleSheet.create({
   trendingName: {
     fontFamily: 'DMSans_600SemiBold',
     fontSize: 16,
-    color: Colors.light.text,
   },
   trendingMeta: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 13,
-    color: Colors.light.textSecondary,
     marginTop: 2,
   },
 });

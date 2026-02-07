@@ -1,15 +1,16 @@
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { Redirect } from 'expo-router';
 import { useUser } from '@/contexts/user-context';
-import { Colors } from '@/constants/theme';
+import { useTheme } from '@/contexts/theme-context';
 
 export default function Index() {
   const { user, isLoading } = useUser();
+  const { colors } = useTheme();
 
   if (isLoading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={Colors.light.tint} />
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.tint} />
       </View>
     );
   }
@@ -26,6 +27,5 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: Colors.light.background,
   },
 });

@@ -3,11 +3,13 @@ import { Text, StyleSheet, ScrollView } from 'react-native';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 
 import { TripCard } from '@/components/trip-card';
-import { Colors, Spacing } from '@/constants/theme';
+import { Spacing } from '@/constants/theme';
 import { useTrips } from '@/contexts/trips-context';
+import { useTheme } from '@/contexts/theme-context';
 
 export default function TripsScreen() {
   const { trips } = useTrips();
+  const { colors } = useTheme();
 
   const currentTrips = trips.filter(
     (t) => t.status === 'planning' || t.status === 'booked' || t.status === 'live'
@@ -16,12 +18,12 @@ export default function TripsScreen() {
 
   return (
     <ScrollView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
       <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
-        <Text style={styles.title}>Your trips</Text>
-        <Text style={styles.subtitle}>
+        <Text style={[styles.title, { color: colors.text }]}>Your trips</Text>
+        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
           {trips.length === 0
             ? 'Trips you create or join will appear here'
             : `${trips.length} trip${trips.length === 1 ? '' : 's'}`}
@@ -30,7 +32,7 @@ export default function TripsScreen() {
 
       {currentTrips.length > 0 && (
         <Animated.View entering={FadeInDown.delay(100).springify()}>
-          <Text style={styles.sectionTitle}>Current</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Current</Text>
           {currentTrips.map((trip, i) => (
             <TripCard key={trip.id} trip={trip} index={i} />
           ))}
@@ -41,7 +43,7 @@ export default function TripsScreen() {
         <Animated.View
           entering={FadeInDown.delay(200).springify()}
           style={styles.pastSection}>
-          <Text style={styles.sectionTitle}>Past trips</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Past trips</Text>
           {pastTrips.map((trip, i) => (
             <TripCard key={trip.id} trip={trip} index={currentTrips.length + i} />
           ))}
@@ -53,8 +55,8 @@ export default function TripsScreen() {
           entering={FadeInDown.delay(200).springify()}
           style={styles.empty}>
           <Text style={styles.emptyEmoji}>✈️</Text>
-          <Text style={styles.emptyText}>No trips yet</Text>
-          <Text style={styles.emptySubtext}>
+          <Text style={[styles.emptyText, { color: colors.text }]}>No trips yet</Text>
+          <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
             Tap Create to start planning your next adventure
           </Text>
         </Animated.View>
@@ -66,7 +68,6 @@ export default function TripsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
   },
   content: {
     paddingTop: 60,
@@ -79,18 +80,15 @@ const styles = StyleSheet.create({
   title: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 28,
-    color: Colors.light.text,
   },
   subtitle: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 15,
-    color: Colors.light.textSecondary,
     marginTop: 4,
   },
   sectionTitle: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 18,
-    color: Colors.light.text,
     marginBottom: Spacing.md,
   },
   pastSection: {
@@ -107,13 +105,11 @@ const styles = StyleSheet.create({
   emptyText: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 20,
-    color: Colors.light.text,
     marginBottom: Spacing.sm,
   },
   emptySubtext: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 15,
-    color: Colors.light.textSecondary,
     textAlign: 'center',
     paddingHorizontal: Spacing.xl,
   },

@@ -12,19 +12,13 @@ import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 
-import { Colors, Spacing, Radius } from '@/constants/theme';
+import { Spacing, Radius } from '@/constants/theme';
 import type { Trip, TripStatus } from '@/contexts/trips-context';
+import { useTheme } from '@/contexts/theme-context';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = width - Spacing.xl * 2;
 const CARD_HEIGHT = 160;
-
-const STATUS_COLORS: Record<TripStatus, string> = {
-  planning: Colors.light.warning,
-  booked: Colors.light.success,
-  live: Colors.light.tint,
-  done: Colors.light.textTertiary,
-};
 
 const COVER_GRADIENTS = [
   ['#E8A68A', '#C45C3E'],
@@ -43,8 +37,15 @@ export function TripCard({
   onPress?: () => void;
 }) {
   const router = useRouter();
+  const { colors } = useTheme();
   const gradient = COVER_GRADIENTS[index % COVER_GRADIENTS.length];
-  const statusColor = STATUS_COLORS[trip.status];
+  const statusColors: Record<TripStatus, string> = {
+    planning: colors.warning,
+    booked: colors.success,
+    live: colors.tint,
+    done: colors.textTertiary,
+  };
+  const statusColor = statusColors[trip.status];
 
   const handlePress = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -77,6 +78,7 @@ export function TripCard({
       <Pressable
         style={({ pressed }) => [
           styles.card,
+          { backgroundColor: colors.surface },
           pressed && styles.cardPressed,
         ]}
         onPress={handlePress}>
@@ -125,7 +127,7 @@ export function TripCard({
                 </View>
               ))}
               {trip.members.length > 3 && (
-                <View style={[styles.avatar, styles.avatarMore, { marginLeft: -8 }]}>
+                <View style={[styles.avatar, { marginLeft: -8, backgroundColor: colors.tint }]}>
                   <Text style={styles.avatarText}>+{trip.members.length - 3}</Text>
                 </View>
               )}
@@ -146,7 +148,6 @@ const styles = StyleSheet.create({
     height: CARD_HEIGHT,
     borderRadius: Radius.lg,
     overflow: 'hidden',
-    backgroundColor: Colors.light.surface,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
@@ -225,9 +226,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 2,
     borderColor: 'rgba(255,255,255,0.5)',
-  },
-  avatarMore: {
-    backgroundColor: Colors.light.tint,
   },
   avatarText: {
     fontFamily: 'DMSans_600SemiBold',

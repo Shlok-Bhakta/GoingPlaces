@@ -6,9 +6,11 @@ import * as Haptics from 'expo-haptics';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Spacing, Radius } from '@/constants/theme';
 import { useUser } from '@/contexts/user-context';
+import { useTheme } from '@/contexts/theme-context';
 
 export default function ProfileScreen() {
   const { user } = useUser();
+  const { colorScheme, colors, toggleTheme } = useTheme();
 
   const displayName = user
     ? [user.firstName, user.lastName].filter(Boolean).join(' ')
@@ -16,37 +18,38 @@ export default function ProfileScreen() {
 
   return (
     <ScrollView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
       <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>
+        <View style={[styles.avatar, { backgroundColor: colors.accentMuted }]}>
+          <Text style={[styles.avatarText, { color: colors.tint }]}>
             {user?.avatar || displayName.slice(0, 2).toUpperCase()}
           </Text>
         </View>
-        <Text style={styles.name}>{displayName}</Text>
+        <Text style={[styles.name, { color: colors.text }]}>{displayName}</Text>
       </Animated.View>
 
       <Animated.View entering={FadeInDown.delay(150).springify()}>
-        <Text style={styles.sectionTitle}>Settings</Text>
-        <View style={styles.settingsCard}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Settings</Text>
+        <View style={[styles.settingsCard, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
           <SettingRow
             icon="paperplane.fill"
             label="Notifications"
             sublabel="Trip updates and reminders"
           />
-          <View style={styles.divider} />
+          <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
           <SettingRow
             icon="map.fill"
             label="Default maps app"
             sublabel="Apple Maps"
           />
-          <View style={styles.divider} />
+          <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
           <SettingRow
             icon="person.fill"
             label="Theme"
-            sublabel="Light (demo)"
+            sublabel={colorScheme === 'light' ? 'Light' : 'Dark'}
+            onPress={toggleTheme}
           />
         </View>
       </Animated.View>
@@ -58,28 +61,35 @@ function SettingRow({
   icon,
   label,
   sublabel,
+  onPress,
 }: {
   icon: string;
   label: string;
   sublabel: string;
+  onPress?: () => void;
 }) {
+  const { colors } = useTheme();
+  const handlePress = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    onPress?.();
+  };
   return (
     <Pressable
       style={({ pressed }) => [styles.settingRow, pressed && styles.rowPressed]}
-      onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}>
+      onPress={handlePress}>
       <IconSymbol
         name={icon as any}
         size={20}
-        color={Colors.light.textSecondary}
+        color={colors.textSecondary}
       />
       <View style={styles.settingContent}>
-        <Text style={styles.settingLabel}>{label}</Text>
-        <Text style={styles.settingSublabel}>{sublabel}</Text>
+        <Text style={[styles.settingLabel, { color: colors.text }]}>{label}</Text>
+        <Text style={[styles.settingSublabel, { color: colors.textSecondary }]}>{sublabel}</Text>
       </View>
       <IconSymbol
         name="chevron.right"
         size={16}
-        color={Colors.light.textTertiary}
+        color={colors.textTertiary}
       />
     </Pressable>
   );
@@ -88,7 +98,6 @@ function SettingRow({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
   },
   content: {
     paddingTop: 60,
@@ -103,7 +112,6 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: Colors.light.accentMuted,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: Spacing.md,
@@ -111,24 +119,19 @@ const styles = StyleSheet.create({
   avatarText: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 28,
-    color: Colors.light.tint,
   },
   name: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 24,
-    color: Colors.light.text,
   },
   sectionTitle: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 18,
-    color: Colors.light.text,
     marginBottom: Spacing.md,
   },
   settingsCard: {
-    backgroundColor: Colors.light.surface,
     borderRadius: Radius.lg,
     borderWidth: 1,
-    borderColor: Colors.light.borderLight,
     overflow: 'hidden',
   },
   settingRow: {
@@ -146,17 +149,14 @@ const styles = StyleSheet.create({
   settingLabel: {
     fontFamily: 'DMSans_600SemiBold',
     fontSize: 16,
-    color: Colors.light.text,
   },
   settingSublabel: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 13,
-    color: Colors.light.textSecondary,
     marginTop: 2,
   },
   divider: {
     height: 1,
-    backgroundColor: Colors.light.borderLight,
     marginLeft: Spacing.md + 20 + Spacing.md,
   },
 });
