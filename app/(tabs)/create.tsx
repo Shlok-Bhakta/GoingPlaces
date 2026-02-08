@@ -34,7 +34,7 @@ export default function CreateTripScreen() {
   const [joinCodeLoading, setJoinCodeLoading] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const { user } = useUser();
-  const { addTripFromApi, effectiveUserId } = useTrips();
+  const { addTripFromApi, effectiveUserId, refetchTrips } = useTrips();
   const router = useRouter();
   const { colors } = useTheme();
   
@@ -72,6 +72,9 @@ export default function CreateTripScreen() {
         setCreatedTripId(trip.id);
         setJoinCode(trip.code ?? null);
         setStep(1);
+        refetchTrips();
+        // Cover image is set in background from trip title; refetch again so My Trips card can show it
+        setTimeout(() => refetchTrips(), 5000);
       } catch {
         setJoinCode(null);
         setStep(1);

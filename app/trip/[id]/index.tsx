@@ -531,6 +531,8 @@ function createStyles(colors: typeof Colors.light) {
       color: colors.textTertiary,
       marginTop: 2,
       maxWidth: 96,
+      alignSelf: 'flex-end',
+      textAlign: 'right',
     },
     mentionDropdown: {
       position: 'absolute',

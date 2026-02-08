@@ -19,6 +19,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import (
+    BackgroundTasks,
     FastAPI,
     HTTPException,
     WebSocket,
@@ -210,14 +211,15 @@ class CreateTripBody(BaseModel):
 
 
 @app.post("/trips")
-def api_create_trip(body: CreateTripBody) -> dict[str, Any]:
-    """Create a trip, add creator as member, return trip with code."""
+def api_create_trip(body: CreateTripBody, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    """Create a trip, add creator as member, return trip with code. Optionally sets cover from trip title via LLM (background)."""
     trip = db_create_trip(
         name=body.name,
         created_by_user_id=body.created_by,
         destination=body.destination or "TBD",
         status=body.status or "planning",
     )
+    background_tasks.add_task(_set_trip_cover_from_trip_name, trip["id"], trip["name"])
     return trip
 
 
@@ -453,6 +455,81 @@ def _set_trip_cover_from_destination(trip_id: str, destination: str) -> None:
     ]
     update_trip_destination(trip_id, dest)
     set_trip_cover(trip_id, place_id, photo_name, attrs_out)
+
+
+def _set_trip_cover_from_query(trip_id: str, query: str) -> None:
+    """Look up a place photo for the given search query and set it as the trip cover. Does not update trip destination."""
+    if not (query or "").strip():
+        return
+    q = query.strip()
+    search_result = gp_search_places(query=q, max_results=1)
+    if search_result.get("error") or not search_result.get("results"):
+        return
+    place_id = search_result["results"][0].get("place_id")
+    if not place_id:
+        return
+    place_data = gp_get_place_with_photos(place_id)
+    if place_data.get("error"):
+        return
+    photos = place_data.get("photos") or []
+    if not photos:
+        return
+    first = photos[0]
+    photo_name = first.get("name")
+    if not photo_name:
+        return
+    attributions = first.get("authorAttributions") or []
+    attrs_out = [
+        {"displayName": a.get("displayName", ""), "uri": a.get("uri", "")}
+        for a in attributions
+    ]
+    set_trip_cover(trip_id, place_id, photo_name, attrs_out)
+
+
+def _llm_place_query_from_trip_name(trip_name: str) -> str | None:
+    """Ask the LLM to derive a short place/location search query from the trip title. Returns None if no key or no suggestion."""
+    if not OPENROUTER_API_KEY or not (trip_name or "").strip():
+        return None
+    prompt = (
+        f'Given this trip title: "{trip_name.strip()}". '
+        "Reply with ONLY a short place/location search query (e.g. 'Paris France', 'Big Sur California') "
+        "that we can use to find a cover photo. One phrase only, no explanation. "
+        "If the title does not suggest any location or place, reply with exactly: NONE"
+    )
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+        response = client.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=64,
+            temperature=0.3,
+        )
+        if not response or not response.choices:
+            return None
+        text = (response.choices[0].message.content or "").strip()
+        if not text or text.upper() == "NONE":
+            return None
+        return text
+    except Exception as e:
+        logger.warning("LLM place query from trip name failed: %s", e)
+        return None
+
+
+def _set_trip_cover_from_trip_name(trip_id: str, trip_name: str) -> None:
+    """Background task: use LLM to get a place search query from the trip title, then set trip cover if possible."""
+    query = _llm_place_query_from_trip_name(trip_name)
+    if not query:
+        return
+    try:
+        _set_trip_cover_from_query(trip_id, query)
+        logger.info("Set trip %s cover from title query: %s", trip_id[:8], query)
+    except Exception as e:
+        logger.warning("Set trip cover from trip name failed: %s", e)
 
 
 @app.put("/trips/{trip_id}/itinerary")
