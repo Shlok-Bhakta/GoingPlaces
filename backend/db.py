@@ -45,6 +45,13 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trip_codes_trip_id ON trip_codes(trip_id)"
         )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trip_itinerary (
+                trip_id TEXT PRIMARY KEY,
+                itinerary_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
 
 
 def _random_4_digit() -> str:
@@ -115,6 +122,31 @@ def add_message(
         "is_ai": bool(row["is_ai"]),
         "created_at": row["created_at"],
     }
+
+
+def get_itinerary(trip_id: str) -> Optional[str]:
+    """Return stored itinerary JSON for a trip, or None."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT itinerary_json FROM trip_itinerary WHERE trip_id = ?",
+            (trip_id,),
+        ).fetchone()
+    return row["itinerary_json"] if row else None
+
+
+def set_itinerary(trip_id: str, itinerary_json: str) -> None:
+    """Store itinerary JSON for a trip."""
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO trip_itinerary (trip_id, itinerary_json)
+            VALUES (?, ?)
+            ON CONFLICT(trip_id) DO UPDATE SET
+                itinerary_json = excluded.itinerary_json,
+                updated_at = datetime('now')
+            """,
+            (trip_id, itinerary_json),
+        )
 
 
 def get_messages(trip_id: str, limit: int = 200) -> list[dict]:
