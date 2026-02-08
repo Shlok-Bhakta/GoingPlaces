@@ -11,6 +11,8 @@ source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+**AI assistant (@gemini in chat):** Uses OpenRouter (google/gemini-3-flash-preview). The `openai` package is required. Set `EXPO_PUBLIC_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY` in the project’s `.env.local` (or in `backend/.env`) so the backend can call the AI when someone types @gemini.
+
 ## Run
 
 ```bash
@@ -29,7 +31,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 3. **Send** a message: `{"content": "hello", "is_ai": false}`.
 4. Server **broadcasts** to everyone in the room: `{"type": "message", "message": { "id", "trip_id", "user_id", "user_name", "content", "is_ai", "created_at" }}`.
 
-Messages are stored in SQLite (`chat.db` in this folder). Set `CHAT_DB_PATH` to override.
+Messages and trips are stored in SQLite (`goingplaces.db` in this folder). Set `DB_PATH` to override.
 
 ## Mobile / other devices
 

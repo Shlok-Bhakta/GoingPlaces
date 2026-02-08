@@ -25,7 +25,7 @@ import { useUser } from '@/contexts/user-context';
 const CHAT_API_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
 
 export default function TripsScreen() {
-  const { trips, joinTrip, fetchUserTrips } = useTrips();
+  const { trips, tripsLoading, effectiveUserId, addTripFromApi } = useTrips();
   const { colors } = useTheme();
   const { user } = useUser();
   const router = useRouter();
@@ -34,12 +34,13 @@ export default function TripsScreen() {
   const [joinLoading, setJoinLoading] = useState(false);
   const joinCodeInputRef = useRef<TextInput>(null);
 
-  // Fetch trips from backend when user is available
-  useEffect(() => {
-    if (user?.id) {
-      fetchUserTrips(user.id);
-    }
-  }, [user?.id, fetchUserTrips]);
+  const finishJoin = (trip: { id: string; name: string; destination: string; status: string; createdBy: string; createdAt: number }) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    addTripFromApi(trip);
+    setJoinModalVisible(false);
+    setJoinCode('');
+    router.push(`/trip/${trip.id}`);
+  };
 
   const handleOpenJoinModal = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -54,14 +55,6 @@ export default function TripsScreen() {
     }
   }, [joinModalVisible]);
 
-  const finishJoin = (tripId: string) => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    joinTrip(tripId, { userId: user?.id });
-    setJoinModalVisible(false);
-    setJoinCode('');
-    router.push(`/trip/${tripId}`);
-  };
-
   const handleJoinTrip = async () => {
     if (joinLoading) return;
     const codeTrimmed = joinCode.trim();
@@ -69,17 +62,31 @@ export default function TripsScreen() {
       Alert.alert('Enter code', 'Enter the 4-digit code.');
       return;
     }
+    const userId = effectiveUserId ?? 'guest';
     setJoinLoading(true);
     try {
       const base = CHAT_API_BASE.replace(/\/$/, '');
-      console.log('CHAT_API_BASE:', base);
-      const res = await fetch(`${base}/resolve-code?code=${encodeURIComponent(codeTrimmed)}`);
+      const res = await fetch(`${base}/trips/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: codeTrimmed, user_id: userId }),
+      });
       if (res.ok) {
-        const data = await res.json();
-        if (data?.trip_id) {
-          finishJoin(data.trip_id);
-          return;
-        }
+        const trip = await res.json();
+        const localTrip = {
+          id: trip.id,
+          name: trip.name,
+          destination: trip.destination ?? 'TBD',
+          status: trip.status ?? 'planning',
+          createdBy: trip.createdBy ?? '',
+          createdAt: typeof trip.createdAt === 'number' ? trip.createdAt : Date.now(),
+        };
+        finishJoin(localTrip);
+        return;
+      }
+      if (res.status === 404) {
+        Alert.alert('Invalid code', 'That code was not found. Check the number and try again.');
+        return;
       }
       Alert.alert('Invalid code', 'That code wasn’t found. Check the number and try again.');
     } catch {
@@ -126,7 +133,13 @@ export default function TripsScreen() {
           </Pressable>
         </Animated.View>
 
-      {currentTrips.length > 0 && (
+      {tripsLoading && uniqueTrips.length === 0 && (
+        <Animated.View entering={FadeInDown.springify()} style={styles.loadingRow}>
+          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading your trips…</Text>
+        </Animated.View>
+      )}
+
+      {!tripsLoading && currentTrips.length > 0 && (
         <Animated.View entering={FadeInDown.delay(100).springify()}>
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Current</Text>
           {currentTrips.map((trip, i) => (
@@ -135,7 +148,7 @@ export default function TripsScreen() {
         </Animated.View>
       )}
 
-      {pastTrips.length > 0 && (
+      {!tripsLoading && pastTrips.length > 0 && (
         <Animated.View
           entering={FadeInDown.delay(200).springify()}
           style={styles.pastSection}>
@@ -146,7 +159,7 @@ export default function TripsScreen() {
         </Animated.View>
       )}
 
-      {uniqueTrips.length === 0 && (
+      {!tripsLoading && uniqueTrips.length === 0 && (
         <Animated.View
           entering={FadeInDown.delay(200).springify()}
           style={styles.empty}>
@@ -288,6 +301,14 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlign: 'center',
     paddingHorizontal: Spacing.xl,
+  },
+  loadingRow: {
+    paddingVertical: Spacing.xl,
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 15,
   },
   modalOverlay: {
     flex: 1,

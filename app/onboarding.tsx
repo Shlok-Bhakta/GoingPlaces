@@ -20,6 +20,8 @@ import { useUser } from '@/contexts/user-context';
 import { useTheme } from '@/contexts/theme-context';
 import { Spacing, Radius } from '@/constants/theme';
 
+const CHAT_API_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
+
 export default function OnboardingScreen() {
   const [step, setStep] = useState<'welcome' | 'name'>('welcome');
   const [firstName, setFirstName] = useState('');
@@ -33,17 +35,46 @@ export default function OnboardingScreen() {
     setStep('name');
   };
 
-  const handleDone = () => {
+  const handleDone = async () => {
     const first = firstName.trim() || 'Traveler';
     const last = lastName.trim() || '';
     if (!first) return;
+    
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setUser({
-      id: `user_${Date.now()}`,
+    
+    const userId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    const newUser = {
+      id: userId,
       firstName: first,
       lastName: last,
       avatar: `${first[0]}${last[0] || ''}`.toUpperCase(),
-    });
+    };
+    
+    // Save user locally first
+    setUser(newUser);
+    
+    // Try to save user to backend database
+    if (CHAT_API_BASE) {
+      try {
+        const base = CHAT_API_BASE.replace(/\/$/, '');
+        await fetch(`${base}/users`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: userId,
+            email: `${userId}@goingplaces.local`, // Dummy email for now
+            first_name: first,
+            last_name: last,
+            username: null,
+            avatar_url: null,
+          }),
+        });
+      } catch (error) {
+        console.error('Failed to save user to backend:', error);
+        // Continue anyway - user is saved locally
+      }
+    }
+    
     router.replace('/(tabs)');
   };
 
