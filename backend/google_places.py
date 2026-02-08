@@ -69,6 +69,16 @@ def search_places(
             "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount",
         }
         r = requests.post(BASE_PLACES_NEW, json=body, headers=headers, timeout=10)
+        if r.status_code == 403:
+            logger.warning(
+                "Places API (New) returned 403. Enable 'Places API (New)' in Google Cloud Console "
+                "(not the legacy Places API) and ensure your API key is allowed to use it."
+            )
+            return {
+                "error": "403 Forbidden: Enable 'Places API (New)' in Google Cloud Console (APIs & Services > Library). "
+                "Ensure your API key has no restrictions blocking this API, or add Places API (New) to allowed APIs.",
+                "results": [],
+            }
         r.raise_for_status()
         data = r.json()
         places_raw = data.get("places") or []
@@ -352,3 +362,70 @@ def _format_distance(meters: int) -> str:
     if km < 1:
         return f"{meters} m"
     return f"{km:.1f} km" if km < 10 else f"{int(round(km))} km"
+
+
+# --- Places API (New): place details with photos, photo media (for trip cover images) ---
+PLACES_NEW_BASE = "https://places.googleapis.com/v1"
+
+
+def get_place_with_photos(place_id: str) -> dict[str, Any]:
+    """
+    Get place details including photos using Places API (New).
+    Returns id, displayName, photos (each with name, authorAttributions).
+    """
+    key = _get_api_key()
+    if not key:
+        return {"error": "Google Maps API key not configured"}
+    place_id = (place_id or "").strip()
+    if not place_id:
+        return {"error": "place_id is required"}
+    try:
+        url = f"{PLACES_NEW_BASE}/places/{place_id}"
+        headers = {
+            "X-Goog-Api-Key": key,
+            "X-Goog-FieldMask": "id,displayName,photos",
+        }
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        return data
+    except requests.RequestException as e:
+        logger.exception("Place details (with photos) failed: %s", e)
+        return {"error": str(e)}
+    except Exception as e:
+        logger.exception("Place details (with photos) error: %s", e)
+        return {"error": str(e)}
+
+
+def get_photo_media(photo_name: str, max_width_px: int = 800) -> dict[str, Any]:
+    """
+    Get a short-lived photo URI from Places API (New) using a photo name
+    (e.g. places/{place_id}/photos/{photo_reference} from get_place_with_photos).
+    Returns { "photoUri": "...", "attributions": [{ "displayName", "uri" }] } or error.
+    Caller must display attributions wherever the image is shown (Google ToS).
+    """
+    key = _get_api_key()
+    if not key:
+        return {"error": "Google Maps API key not configured"}
+    photo_name = (photo_name or "").strip()
+    if not photo_name or "/photos/" not in photo_name:
+        return {"error": "photo_name required (format: places/{place_id}/photos/{photo_reference})"}
+    try:
+        # Media resource: append /media to photo name (places/{id}/photos/{ref} -> .../media)
+        media_name = (photo_name + "/media") if not photo_name.endswith("/media") else photo_name
+        url = f"{PLACES_NEW_BASE}/{media_name}"
+        params = {"maxWidthPx": max_width_px, "skipHttpRedirect": "true", "key": key}
+        headers = {"X-Goog-Api-Key": key}
+        r = requests.get(url, params=params, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        photo_uri = data.get("photoUri")
+        if not photo_uri:
+            return {"error": "No photoUri in response"}
+        return {"photoUri": photo_uri}
+    except requests.RequestException as e:
+        logger.exception("Photo media request failed: %s", e)
+        return {"error": str(e)}
+    except Exception as e:
+        logger.exception("Photo media error: %s", e)
+        return {"error": str(e)}

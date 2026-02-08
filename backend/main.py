@@ -47,10 +47,14 @@ from db import (
     add_trip_media,
     get_trip_media,
     create_user as db_create_user,
+    update_trip_destination,
+    set_trip_cover,
 )
 from google_places import (
     search_places as gp_search_places,
     get_place_details as gp_get_place_details,
+    get_place_with_photos as gp_get_place_with_photos,
+    get_photo_media as gp_get_photo_media,
     get_distance_matrix as gp_get_distance_matrix,
     get_directions as gp_get_directions,
 )
@@ -258,8 +262,31 @@ def api_create_user(body: CreateUserBody) -> dict[str, Any]:
 
 @app.get("/users/{user_id}/trips")
 def api_my_trips(user_id: str) -> list[dict[str, Any]]:
-    """Return all trips the user is a member of (persisted across refresh)."""
-    return get_trips_for_user(user_id)
+    """Return all trips the user is a member of (persisted across refresh). Includes short-lived coverImage URL when trip has a cover."""
+    trips = get_trips_for_user(user_id)
+    result = []
+    for t in trips:
+        if t.get("coverPhotoName"):
+            media = gp_get_photo_media(t["coverPhotoName"], max_width_px=800)
+            if not media.get("error") and media.get("photoUri"):
+                t = {**t, "coverImage": media["photoUri"], "coverAttributions": t.get("coverPhotoAttributions") or []}
+        result.append(t)
+    return result
+
+
+@app.get("/trips/{trip_id}/cover-image")
+def get_trip_cover_image(trip_id: str) -> dict[str, Any]:
+    """Return short-lived photo URI and attributions for the trip cover (Google Places). Must display attributions where the image is shown."""
+    trip = db_get_trip(trip_id)
+    if not trip or not trip.get("coverPhotoName"):
+        raise HTTPException(status_code=404, detail="No cover image for this trip")
+    media = gp_get_photo_media(trip["coverPhotoName"], max_width_px=800)
+    if media.get("error"):
+        raise HTTPException(status_code=502, detail=media.get("error", "Failed to fetch cover image"))
+    return {
+        "photoUri": media["photoUri"],
+        "attributions": trip.get("coverPhotoAttributions") or [],
+    }
 
 
 @app.get("/trips/{trip_id}/messages")
@@ -366,6 +393,51 @@ class AddToPlanResolveBody(BaseModel):
     suggestion: AddToPlanSuggestion
 
 
+def _extract_destination_from_itinerary(itinerary: list[dict[str, Any]]) -> str | None:
+    """Get a location string from the first activity (location or title) for Places search."""
+    for day in itinerary or []:
+        activities = day.get("activities") or []
+        for act in activities:
+            loc = (act.get("location") or "").strip()
+            if loc:
+                return loc
+            title = (act.get("title") or "").strip()
+            if title:
+                return title
+    return None
+
+
+def _set_trip_cover_from_destination(trip_id: str, destination: str) -> None:
+    """Look up a place photo for the destination and set it as the trip cover (Google Places API New)."""
+    if not (destination or "").strip():
+        return
+    dest = destination.strip()
+    search_result = gp_search_places(query=dest, max_results=1)
+    if search_result.get("error") or not search_result.get("results"):
+        return
+    place_id = search_result["results"][0].get("place_id")
+    if not place_id:
+        return
+    place_data = gp_get_place_with_photos(place_id)
+    if place_data.get("error"):
+        return
+    photos = place_data.get("photos") or []
+    if not photos:
+        return
+    first = photos[0]
+    photo_name = first.get("name")
+    if not photo_name:
+        return
+    # authorAttributions: list of { displayName, uri } (Places API New)
+    attributions = first.get("authorAttributions") or []
+    attrs_out = [
+        {"displayName": a.get("displayName", ""), "uri": a.get("uri", "")}
+        for a in attributions
+    ]
+    update_trip_destination(trip_id, dest)
+    set_trip_cover(trip_id, place_id, photo_name, attrs_out)
+
+
 @app.put("/trips/{trip_id}/itinerary")
 async def put_trip_itinerary(trip_id: str, body: PutItineraryBody) -> dict[str, Any]:
     """Save itinerary for a trip and broadcast to all clients in the trip's WebSocket room."""
@@ -375,6 +447,12 @@ async def put_trip_itinerary(trip_id: str, body: PutItineraryBody) -> dict[str, 
     if not normalized:
         raise HTTPException(status_code=400, detail="Invalid itinerary")
     set_itinerary(trip_id, json.dumps(normalized))
+    destination = _extract_destination_from_itinerary(normalized)
+    if destination:
+        try:
+            _set_trip_cover_from_destination(trip_id, destination)
+        except Exception:
+            pass  # non-fatal: cover is optional
     room = get_room(trip_id)
     payload = {"type": "itinerary", "trip_id": trip_id, "itinerary": normalized}
     dead = set()
@@ -390,7 +468,7 @@ async def put_trip_itinerary(trip_id: str, body: PutItineraryBody) -> dict[str, 
 
 @app.post("/trips/{trip_id}/add-to-plan/resolve")
 def add_to_plan_resolve(trip_id: str, body: AddToPlanResolveBody) -> dict[str, Any]:
-    """Run add-to-plan through LLM to detect conflicts and return resolution (add itinerary or conflict + button options)."""
+    """Add suggestion to itinerary using deterministic algorithm (dayLabel + time, chronological order)."""
     raw = get_itinerary(trip_id)
     current_itinerary: list[dict] = []
     if raw:
@@ -401,12 +479,8 @@ def add_to_plan_resolve(trip_id: str, body: AddToPlanResolveBody) -> dict[str, A
         except json.JSONDecodeError:
             pass
     suggestion = body.suggestion.model_dump()
-    result = _call_add_to_plan_resolve_sync(
-        current_itinerary,
-        suggestion,
-        trip_info=db_get_trip(trip_id),
-    )
-    return result
+    itinerary = _apply_suggestion_to_itinerary(current_itinerary, suggestion)
+    return {"action": "add", "itinerary": itinerary}
 
 
 # --- Google Places / Distance Matrix (for realistic trip planning; also used by LLM tools) ---
@@ -513,11 +587,19 @@ Choose ONE based on the user's request:
 
 When in doubt: if they're ASKING (what, how, summarize, tell me) or asking to REPLACE one item with options → RESPOND_ONLY (with suggestions + replace fields for replace). If they're REQUESTING full changes (add, remove, let's plan) → UPDATE_ITINERARY.
 
+## Prefer one-shot itineraries (non-specific requests)
+
+When the user's prompt is non-specific (e.g. "plan a trip to SF", "help us plan Austin", "give us a 3-day NYC itinerary") and they have not stated special requirements (dietary, accessibility, "must include X"):
+- **Generate a complete itinerary in one shot.** Use reasonable defaults: popular attractions, well-rated restaurants, typical flights/hotels. Do not ask clarifying questions—output the full plan and let the user edit it later.
+- **For meals/restaurants:** When cuisine or venue is unspecified, pick the top-rated option from search and add it. Do not ask "which do you prefer?"—add it to the itinerary so the user can change it if needed.
+- **Only ask when essential:** Trip dates if completely absent, or when the user mentions constraints that need clarification (e.g. "I'm vegan", "we need wheelchair access").
+- **Infer what you can:** "Next weekend" → pick dates; "2–3 days" → 3 days; no origin given for flights → use the trip destination's main airport as a common hub if logical, or pick a reasonable default. Better to produce something editable than to block on questions.
+
 ## Trip dates (UPDATE_ITINERARY)
 
 When creating or updating an itinerary, you MUST have concrete dates for the trip:
 - **Extract dates from the user** when they mention them (e.g. "March 15–17", "next weekend", "Dec 20 to 22", "we arrive Friday and leave Sunday", "3 days starting the 10th").
-- **If dates are unclear or missing**: Do NOT output UPDATE_ITINERARY. Use RESPOND_ONLY instead and ask the user clearly, e.g. "When is your trip? What are the start and end dates?" or "What date does Day 1 start? I'll need the exact dates so I can show them on the plan."
+- **If dates are unclear or missing** and the request is non-specific: Use reasonable placeholder dates (e.g. a sample weekend in the near future in YYYY-MM-DD) so you can one-shot the itinerary. In your response, mention they can update the dates in the plan. Only use RESPOND_ONLY to ask for dates when the user has given specific constraints that make guessing inappropriate.
 - **Every day in the itinerary MUST have a date** in YYYY-MM-DD format. Set the **date** field for each day (Day 1 = first day, Day 2 = second, etc.). The app displays this date above "Day X" for each day.
 
 ## Step 2: Output in this format
@@ -528,7 +610,9 @@ For RESPOND_ONLY, output:
 
 When you list options for the user to choose from, you MUST also output a <suggestions> block so they can tap to add or replace in the plan without replying. You MAY output many suggestions in one message (e.g. options for Day 1 dinner and Day 2 lunch). Use the same order as in your response.
 
-**CRITICAL for flight/hotel options:** When you list flight or hotel options from search_flights/search_hotels, you MUST include a suggestion for EVERY option you mention—including budget options, multi-stop flights, and cheaper alternatives. Never omit any option; if you list 3 flights in your response, you MUST have 3 suggestions. Always display prices in US dollars ($), never euros (€).
+**Format for readability:** When you have multiple categories of recommendations in a single message (e.g. flights, hotels, Day 1 dinner, Day 2 lunch), put each category in its own paragraph. Use a blank line between paragraphs. Example: one paragraph for flights, then a blank line, then a paragraph for hotels, then a blank line, then a paragraph for Day 1 dinner options, etc. This makes the response easier to scan.
+
+**CRITICAL for flight/hotel options:** When you list flight or hotel options from search_flights/search_hotels, you MUST include a suggestion for EVERY option you mention—including budget options, multi-stop flights, and cheaper alternatives. Never omit any option; if you list 3 flights in your response, you MUST have 3 suggestions. **Always include the price for each flight and hotel when the API returned price data**—display in US dollars ($), never euros (€). Omit price only when the API did not provide it (e.g. "Price not available").
 
 **Every suggestion must specify day and time when adding:** So the app adds each option to the correct slot, every suggestion MUST include **dayLabel** (e.g. "Day 1", "Day 2", "Friday") and **time** (e.g. "6:00 PM", "12:00 PM") when the user asked for options for specific days/meals. When the user asks for "2 meals" or "surprises for Day 1 and Day 2", output multiple suggestions: some with dayLabel "Day 1" and time for that meal (e.g. "6:00 PM" for dinner), others with dayLabel "Day 2" and time for that meal (e.g. "12:00 PM" for lunch). In your response text, clearly say which options are for which day and time (e.g. "For Day 1 dinner: Fog Harbor, Scoma's. For Day 2 lunch: Gott's, Slanted Door.").
 
@@ -568,6 +652,8 @@ When the user wants to create or update an itinerary, use the provided tools to 
 
 Use these tools when building or updating an itinerary so that places, hours, travel times, flights, and hotels are accurate. You may call multiple tools before outputting the final <itinerary>.
 
+**CRITICAL – Do NOT hold back on API calls:** When the user asks for a complete itinerary (flights, hotels, restaurants, activities, etc.), you MUST make ALL the necessary tool calls until every requested element has real data. Example: if they want "a full 3-day trip with flights, a hotel, and meals" → call search_flights, search_hotels, search_food_places (or search_places) for each meal, get_place_details for each place you add. Do not output the itinerary until you have called the tools for flights, hotels, and each restaurant/activity. Keep making tool calls across multiple rounds until everything is covered. Never skip a tool call to save time—the user expects real data for all requested elements.
+
 ## CRITICAL: Use real place data in the itinerary
 
 When you have called search_places and/or get_place_details, you MUST use that real data in the itinerary—never generic labels or vague descriptions.
@@ -578,7 +664,7 @@ When you have called search_places and/or get_place_details, you MUST use that r
 
 If you searched for a restaurant or venue and got results, the itinerary MUST list that place by name and include its address and rating in the description. Always call get_place_details for any place you add so you have opening hours and rating to include.
 
-When the user asks about flights or hotels, call search_flights or search_hotels to get real pricing. In your response, include the prices and options you found. **For flights:** Use the itinerary in context to check each option's departure/arrival times against existing activities on the same day. Clearly say if a flight conflicts (e.g. overlaps with a meal, meeting, or other activity) or fits the schedule. Include this in both your response text and in each suggestion's description. If updating the itinerary, add flight or hotel activities with the real data (airline, price, times for flights; hotel name, price for hotels).
+When the user asks about flights or hotels, call search_flights or search_hotels to get real pricing. In your response, **always include the price for each flight and hotel when available**—in both your response text and in each suggestion's description/activity. Never omit prices if the API returned them. If the API did not return a price, you may note "Price not available". **For flights:** Use the itinerary in context to check each option's departure/arrival times against existing activities on the same day. Clearly say if a flight conflicts (e.g. overlaps with a meal, meeting, or other activity) or fits the schedule. If updating the itinerary, add flight or hotel activities with the real data (airline, price, times for flights; hotel name, price for hotels).
 
 ## Food / restaurant activities – required data and when to ask the user
 
@@ -728,7 +814,7 @@ PLACES_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "search_flights",
-            "description": "Search for flight offers with real prices between origin and destination. Use when the user asks about flights, airline options, flight costs, or wants to add flights to the itinerary. Accepts city names (e.g. 'San Francisco', 'Paris') or IATA codes (SFO, PAR). Returns offers with price, currency, carrier, departure/arrival times. After getting results, compare each flight's times with the current itinerary and clearly state conflicts (e.g. overlaps with lunch at 12 PM) or that it fits the schedule.",
+            "description": "Search for flight offers with real prices between origin and destination. Use when the user asks about flights, airline options, flight costs, or wants to add flights to the itinerary. Accepts city names (e.g. 'San Francisco', 'Paris') or IATA codes (SFO, PAR). Returns offers with price, currency, carrier, departure/arrival times. Always include the price for each flight in your response when the API returns it. After getting results, compare each flight's times with the current itinerary and clearly state conflicts (e.g. overlaps with lunch at 12 PM) or that it fits the schedule.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -762,7 +848,7 @@ PLACES_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "search_hotels",
-            "description": "Search for hotel offers with real prices in a city (Amadeus). Use when the user asks about hotels, accommodation, where to stay, or 'highly rated hotels'. Prefer this over search_places for any hotel query. Accepts city name or IATA code; use trip start/end dates for check_in and check_out when available.",
+            "description": "Search for hotel offers with real prices in a city (Amadeus). Use when the user asks about hotels, accommodation, where to stay, or 'highly rated hotels'. Prefer this over search_places for any hotel query. Accepts city name or IATA code; use trip start/end dates for check_in and check_out when available. Always include the price for each hotel in your response when the API returns it.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -963,7 +1049,7 @@ def _call_add_to_plan_resolve_sync(
     """Call LLM to check add-to-plan conflicts and return either add itinerary or conflict + resolution options."""
     if not OPENROUTER_API_KEY:
         logger.warning("OpenRouter: no API key set for add-to-plan resolve")
-        return {"action": "add", "itinerary": _apply_suggestion_fallback(current_itinerary, suggestion)}
+        return {"action": "add", "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion)}
     try:
         from openai import OpenAI
 
@@ -992,18 +1078,20 @@ def _call_add_to_plan_resolve_sync(
             temperature=0.3,
         )
         if not response or not response.choices:
-            return {"action": "add", "itinerary": _apply_suggestion_fallback(current_itinerary, suggestion)}
+            return {"action": "add", "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion)}
         text = (response.choices[0].message.content or "").strip()
         return _parse_add_to_plan_resolve_response(text, current_itinerary, suggestion)
     except Exception as e:
         logger.exception("Add-to-plan resolve LLM error: %s", e)
-        return {"action": "add", "itinerary": _apply_suggestion_fallback(current_itinerary, suggestion)}
+        return {"action": "add", "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion)}
 
 
-def _apply_suggestion_fallback(
+def _apply_suggestion_to_itinerary(
     current_itinerary: list[dict], suggestion: dict[str, Any]
 ) -> list[dict]:
-    """Apply suggestion to itinerary locally when LLM is unavailable or parse fails."""
+    """Apply suggestion to itinerary using deterministic algorithm.
+    Inserts new activities at the correct chronological position within the day.
+    Uses dayLabel and time from the suggestion; does not rely on LLM placement."""
     new_act = {
         "id": f"act-{uuid.uuid4().hex[:12]}",
         "time": (suggestion.get("time") or "").strip() or None,
@@ -1021,10 +1109,13 @@ def _apply_suggestion_fallback(
                 ):
                     a.update(new_act)
                     a["id"] = a.get("id") or new_act["id"]
+                    day["activities"] = _sort_activities_chronologically(day.get("activities") or [])
                     return current_itinerary
         # replace target not found, add to first day
         if current_itinerary:
-            (current_itinerary[0].setdefault("activities", [])).append(new_act)
+            acts = current_itinerary[0].setdefault("activities", [])
+            acts.append(new_act)
+            current_itinerary[0]["activities"] = _sort_activities_chronologically(acts)
         else:
             current_itinerary = [{"id": "day-1", "dayNumber": 1, "title": "Day 1", "date": None, "activities": [new_act]}]
         return current_itinerary
@@ -1041,7 +1132,9 @@ def _apply_suggestion_fallback(
         target_day = current_itinerary[0]
     if not target_day:
         return [{"id": "day-1", "dayNumber": 1, "title": "Day 1", "date": None, "activities": [new_act]}]
-    target_day.setdefault("activities", []).append(new_act)
+    acts = target_day.setdefault("activities", [])
+    acts.append(new_act)
+    target_day["activities"] = _sort_activities_chronologically(acts)
     return current_itinerary
 
 
@@ -1050,7 +1143,7 @@ def _parse_add_to_plan_resolve_response(
 ) -> dict[str, Any]:
     """Parse LLM response into action 'add' with itinerary or 'conflict' with message and resolutionOptions."""
     if not text:
-        return {"action": "add", "itinerary": _apply_suggestion_fallback(current_itinerary, suggestion)}
+        return {"action": "add", "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion)}
     resolution_match = re.search(
         r"<resolution>\s*(.+?)\s*</resolution>", text, re.DOTALL | re.IGNORECASE
     )
@@ -1108,7 +1201,7 @@ def _parse_add_to_plan_resolve_response(
         parsed = _parse_itinerary_json(raw)
         if parsed:
             return {"action": "add", "itinerary": parsed}
-    return {"action": "add", "itinerary": _apply_suggestion_fallback(current_itinerary, suggestion)}
+    return {"action": "add", "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion)}
 
 
 def _call_openrouter_sync(
@@ -1162,7 +1255,7 @@ def _call_openrouter_sync(
             return "No chat history to send. Say something and mention @gemini again."
         if extra_user_message:
             api_messages.append({"role": "user", "content": extra_user_message})
-        max_tool_rounds = 10
+        max_tool_rounds = 25
         out = ""
         for _round in range(max_tool_rounds):
             if status_queue is not None:
@@ -1355,8 +1448,47 @@ def _extract_itinerary_from_response(text: str) -> list[dict] | None:
     return _parse_itinerary_json(raw)
 
 
+def _parse_time_to_minutes(time_str: str) -> int:
+    """Parse time string (e.g. '9:00 AM', '14:30', '6:00 PM') to minutes since midnight.
+    Returns 9999 for unparseable so activities without times sort to the end."""
+    if not time_str or not isinstance(time_str, str):
+        return 9999
+    s = time_str.strip().upper()
+    if not s:
+        return 9999
+    # Match "9:00 AM", "9:00AM", "12:30 PM"
+    m = re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM)?", s, re.IGNORECASE)
+    if m:
+        h, mn, ampm = int(m.group(1)), int(m.group(2)), (m.group(3) or "").upper()
+        if ampm == "PM" and h != 12:
+            h += 12
+        elif ampm == "AM" and h == 12:
+            h = 0
+        elif not ampm and h < 24:
+            pass  # 24h format
+        elif not ampm and h >= 12:
+            pass  # ambiguous, assume 24h
+        return h * 60 + min(mn, 59)
+    # Match "9 AM", "6 PM"
+    m = re.match(r"(\d{1,2})\s*(AM|PM)", s, re.IGNORECASE)
+    if m:
+        h, ampm = int(m.group(1)), (m.group(2) or "").upper()
+        if ampm == "PM" and h != 12:
+            h += 12
+        elif ampm == "AM" and h == 12:
+            h = 0
+        return h * 60
+    return 9999
+
+
+def _sort_activities_chronologically(activities: list[dict]) -> list[dict]:
+    """Sort activities by time of day. Activities without time go at the end."""
+    return sorted(activities, key=lambda a: _parse_time_to_minutes(a.get("time") or ""))
+
+
 def _parse_itinerary_json(raw: str) -> list[dict] | None:
-    """Parse and normalize itinerary JSON string to our schema."""
+    """Parse and normalize itinerary JSON string to our schema.
+    Activities within each day are sorted chronologically by time."""
     if not raw:
         return None
     try:
@@ -1367,25 +1499,26 @@ def _parse_itinerary_json(raw: str) -> list[dict] | None:
         for i, day in enumerate(data):
             if not isinstance(day, dict):
                 continue
-            activities = day.get("activities") or []
+            activities = [
+                {
+                    "id": a.get("id") or f"act-{j + 1}",
+                    "time": str(a.get("time", "")).strip() or None,
+                    "title": str(a.get("title") or ""),
+                    "description": str(a.get("description", "")).strip()
+                    or None,
+                    "location": str(a.get("location", "")).strip() or None,
+                }
+                for j, a in enumerate(day.get("activities") or [])
+                if isinstance(a, dict)
+            ]
+            activities = _sort_activities_chronologically(activities)
             out.append(
                 {
                     "id": day.get("id") or f"day-{i + 1}",
                     "dayNumber": int(day.get("dayNumber", i + 1)),
                     "title": str(day.get("title") or f"Day {i + 1}"),
                     "date": str(day.get("date", "")).strip() or None,
-                    "activities": [
-                        {
-                            "id": a.get("id") or f"act-{j + 1}",
-                            "time": str(a.get("time", "")).strip() or None,
-                            "title": str(a.get("title") or ""),
-                            "description": str(a.get("description", "")).strip()
-                            or None,
-                            "location": str(a.get("location", "")).strip() or None,
-                        }
-                        for j, a in enumerate(activities)
-                        if isinstance(a, dict)
-                    ],
+                    "activities": activities,
                 }
             )
         return out if out else None
