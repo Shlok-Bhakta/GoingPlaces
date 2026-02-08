@@ -54,6 +54,7 @@ export default function TripsScreen() {
     setJoinLoading(true);
     try {
       const base = CHAT_API_BASE.replace(/\/$/, '');
+      console.log('CHAT_API_BASE:', base);
       const res = await fetch(`${base}/resolve-code?code=${encodeURIComponent(codeTrimmed)}`);
       if (res.ok) {
         const data = await res.json();
@@ -64,16 +65,21 @@ export default function TripsScreen() {
       }
       Alert.alert('Invalid code', 'That code wasn’t found. Check the number and try again.');
     } catch {
-      Alert.alert('Error', 'Couldn’t connect. Check that the backend is running.');
+      Alert.alert(
+        'Error',
+        "Couldn't connect to the trip server. On a phone, the app must use your computer's IP: in the project folder set EXPO_PUBLIC_CHAT_WS_BASE=http://YOUR_PC_IP:8000 in .env, then restart Expo."
+      );
     } finally {
       setJoinLoading(false);
     }
   };
 
-  const currentTrips = trips.filter(
+  // Deduplicate by id (handles double-join from Strict Mode / deep link)
+  const uniqueTrips = trips.filter((t, i, arr) => arr.findIndex((x) => x.id === t.id) === i);
+  const currentTrips = uniqueTrips.filter(
     (t) => t.status === 'planning' || t.status === 'booked' || t.status === 'live'
   );
-  const pastTrips = trips.filter((t) => t.status === 'done');
+  const pastTrips = uniqueTrips.filter((t) => t.status === 'done');
 
   return (
     <>
@@ -94,9 +100,9 @@ export default function TripsScreen() {
             </Pressable>
           </View>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-            {trips.length === 0
+            {uniqueTrips.length === 0
               ? 'Trips you create or join will appear here'
-              : `${trips.length} trip${trips.length === 1 ? '' : 's'}`}
+              : `${uniqueTrips.length} trip${uniqueTrips.length === 1 ? '' : 's'}`}
           </Text>
         </Animated.View>
 
@@ -120,7 +126,7 @@ export default function TripsScreen() {
         </Animated.View>
       )}
 
-      {trips.length === 0 && (
+      {uniqueTrips.length === 0 && (
         <Animated.View
           entering={FadeInDown.delay(200).springify()}
           style={styles.empty}>

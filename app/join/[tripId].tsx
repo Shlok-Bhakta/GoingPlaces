@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { View, ActivityIndicator, Text, StyleSheet } from 'react-native';
 
 import { useTrips } from '@/contexts/trips-context';
@@ -14,12 +14,15 @@ export default function JoinTripScreen() {
   const { tripId } = useLocalSearchParams<{ tripId: string }>();
   const router = useRouter();
   const { joinTrip } = useTrips();
+  const joinedRef = useRef(false);
 
   useEffect(() => {
     if (!tripId) {
       router.replace('/(tabs)');
       return;
     }
+    if (joinedRef.current) return;
+    joinedRef.current = true;
     joinTrip(tripId);
     const id = setTimeout(() => router.replace(`/trip/${tripId}`), 0);
     return () => clearTimeout(id);

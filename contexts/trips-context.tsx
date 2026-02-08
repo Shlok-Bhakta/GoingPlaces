@@ -82,7 +82,8 @@ export function TripsProvider({ children }: { children: React.ReactNode }) {
         createdBy: 'unknown',
         createdAt: now,
       };
-      return [newTrip, ...prev];
+      // Remove any existing trip with same id (handles double-call from Strict Mode / deep link)
+      return [newTrip, ...prev.filter((t) => t.id !== tripId)];
     });
   }, []);
 

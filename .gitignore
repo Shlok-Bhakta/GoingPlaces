@@ -47,3 +47,7 @@ app-example
 # generated native folders
 /ios
 /android
+
+.env
+backend/__pycache__/
+backend/venv/r
