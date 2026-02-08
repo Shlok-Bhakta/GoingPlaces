@@ -17,7 +17,8 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View
+  View,
+  useWindowDimensions,
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import MapView, { Marker, Polyline } from 'react-native-maps';
@@ -170,6 +171,22 @@ function normalizeItinerary(raw: unknown): Itinerary {
             }))
         : [],
     }));
+}
+
+/** Derive trip startDate/endDate from itinerary day dates (YYYY-MM-DD). */
+function itineraryToTripDates(itinerary: Itinerary): { startDate?: number; endDate?: number } {
+  const dates = itinerary
+    .map((d) => d.date)
+    .filter((s): s is string => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s));
+  if (dates.length === 0) return {};
+  const sorted = [...dates].sort();
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const parse = (s: string) => {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d).getTime();
+  };
+  return { startDate: parse(first), endDate: parse(last) };
 }
 
 const TABS = ['Chat', 'Plan', 'Map', 'Costs', 'Album'] as const;
@@ -385,6 +402,7 @@ function createStyles(colors: typeof Colors.light) {
       flexDirection: 'row',
       marginBottom: Spacing.md,
       gap: Spacing.md,
+      overflow: 'hidden',
     },
     itineraryActivityTime: {
       fontFamily: 'DMSans_600SemiBold',
@@ -392,7 +410,7 @@ function createStyles(colors: typeof Colors.light) {
       color: colors.tint,
       minWidth: 56,
     },
-    itineraryActivityContent: { flex: 1 },
+    itineraryActivityContent: { flex: 1, minWidth: 0, overflow: 'hidden' },
     itineraryActivityTitle: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 15,
@@ -412,14 +430,17 @@ function createStyles(colors: typeof Colors.light) {
       marginTop: 2,
     },
     itineraryActivityLocationPressable: {
-      alignSelf: 'flex-start',
+      width: '100%',
     },
     itineraryActivityLocationLinkRow: {
       flexDirection: 'row',
       alignItems: 'center',
       marginTop: 2,
+      flexShrink: 1,
+      minWidth: 0,
     },
     itineraryActivityLocationLink: {
+      flex: 1,
       fontFamily: 'DMSans_400Regular',
       fontSize: 13,
       color: colors.tint,
@@ -603,6 +624,7 @@ export default function TripDetailScreen() {
   const { getTrip, updateTrip } = useTrips();
   const { user } = useUser();
   const { colors } = useTheme();
+  const { width: windowWidth } = useWindowDimensions();
   const trip = id ? getTrip(id) : null;
   const styles = useMemo(() => createStyles(colors), [colors]);
 
@@ -807,7 +829,8 @@ export default function TripDetailScreen() {
   const applyItineraryToTrip = useCallback(
     (itinerary: Itinerary) => {
       if (!id) return;
-      updateTrip(id, { itinerary });
+      const dates = itineraryToTripDates(itinerary);
+      updateTrip(id, { itinerary, ...dates });
       const base = CHAT_WS_BASE.replace(/\/$/, '');
       fetch(`${base}/trips/${encodeURIComponent(id)}/itinerary`, {
         method: 'PUT',
@@ -1095,7 +1118,10 @@ export default function TripDetailScreen() {
           );
           if (data.itinerary && Array.isArray(data.itinerary) && id) {
             const itinerary = normalizeItinerary(data.itinerary);
-            if (itinerary.length > 0) updateTrip(id, { itinerary });
+            if (itinerary.length > 0) {
+              const dates = itineraryToTripDates(itinerary);
+              updateTrip(id, { itinerary, ...dates });
+            }
           }
         } else if (data.type === 'typing' && data.user_name === 'Gemini') {
           setGeminiTyping(true);
@@ -1147,9 +1173,18 @@ export default function TripDetailScreen() {
           setGeminiTypingStatus('');
           const itinerary = normalizeItinerary(data.itinerary);
           if (itinerary.length > 0) {
-            updateTrip(id, { itinerary });
+            const dates = itineraryToTripDates(itinerary);
+            updateTrip(id, {
+              itinerary,
+              ...dates,
+              ...(typeof data.destination === 'string' && { destination: data.destination }),
+            });
             setActiveTab('Plan');
           }
+        } else if (data.type === 'trip_update' && id && typeof data.destination === 'string') {
+          setGeminiTyping(false);
+          setGeminiTypingStatus('');
+          updateTrip(id, { destination: data.destination });
         }
       } catch (_) {}
     };
@@ -1862,7 +1897,7 @@ export default function TripDetailScreen() {
       {activeTab === 'Plan' && (
         <ScrollView
           style={styles.tabContent}
-          contentContainerStyle={styles.tabContentInner}
+          contentContainerStyle={[styles.tabContentInner, { width: windowWidth }]}
           showsVerticalScrollIndicator={false}>
           {trip.itinerary && trip.itinerary.length > 0 ? (
             <Animated.View entering={FadeInDown.springify()}>
@@ -1902,7 +1937,7 @@ export default function TripDetailScreen() {
                               >
                                 <View style={styles.itineraryActivityLocationLinkRow}>
                                   <IconSymbol name="map.fill" size={14} color={colors.tint} style={{ marginRight: 6 }} />
-                                  <Text style={styles.itineraryActivityLocationLink}>{loc}</Text>
+                                  <Text style={styles.itineraryActivityLocationLink} numberOfLines={1} ellipsizeMode="tail">{loc}</Text>
                                 </View>
                               </Pressable>
                             );

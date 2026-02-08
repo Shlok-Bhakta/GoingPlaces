@@ -639,6 +639,8 @@ Itinerary JSON structure (each day: id, dayNumber, title, date required in YYYY-
 
 **CRITICAL for UPDATE_ITINERARY:** You are given the current itinerary in the context below. When the user asks to ADD something (e.g. arrival/departure flight times, a new activity, a new day), your <itinerary> output MUST be the COMPLETE plan: include EVERY day and EVERY activity that is already in the current itinerary, unchanged, PLUS your new or modified items. Never output only the new items—that would replace the whole plan and delete everything else. If the user says "add X", start from the full current itinerary, add X, then output that full array.
 
+**Updating the trip location:** The location shown below the trip name on the trip card is the trip's destination. When the user asks to change where the trip is going (e.g. "change destination to Austin", "we're going to Napa instead"), output <destination>New city or area name</destination> in your response. You can do this with RESPOND_ONLY (just the destination change) or together with UPDATE_ITINERARY. The app will update the trip card accordingly.
+
 ## Tools for realistic plans (UPDATE_ITINERARY)
 
 When the user wants to create or update an itinerary, use the provided tools to make the plan realistic:
@@ -984,7 +986,8 @@ ITINERARY_DONE_MESSAGE = "I've added your itinerary to the Plan tab! Check the P
 JSON_ONLY_PROMPT = """Output ONLY a valid JSON array for the COMPLETE trip itinerary. Include ALL days and activities from the current itinerary in the context above, plus any additions you are making (e.g. flight times). No markdown, no code fence, no other text. Format: [{"id":"day-1","dayNumber":1,"title":"Day 1","date":"YYYY-MM-DD","activities":[{"id":"act-1","time":"9:00 AM","title":"Title","description":"","location":""}]}]. Each day: id, dayNumber, title, date (required, YYYY-MM-DD), activities. Each activity: id, time, title, description, location."""
 
 TRIP_INFO_PREFIX = """=== CONTEXT ===
-This conversation is about the trip "{name}" (destination: {destination}).
+This conversation is about the trip "{name}".
+Location (shown below the trip name on the trip card): {destination}. You can read and update this location. When the user asks to change where the trip is going (e.g. "change destination to Austin", "we're going to Napa instead"), output <destination>New location</destination> with the new city/area name so the app updates it.
 
 """
 
@@ -1396,17 +1399,30 @@ def _parse_suggestions(text: str) -> list[dict] | None:
         return None
 
 
+def _parse_destination(text: str) -> str | None:
+    """Extract <destination>...</destination> from AI response. Returns stripped value or None."""
+    if not text or not text.strip():
+        return None
+    match = re.search(
+        r"<destination>\s*([\s\S]*?)\s*</destination>", text, re.DOTALL | re.IGNORECASE
+    )
+    if not match:
+        return None
+    value = (match.group(1) or "").strip()
+    return value if value else None
+
+
 def _parse_structured_response(
     text: str,
-) -> tuple[str, list[dict] | None, list[dict] | None]:
+) -> tuple[str, list[dict] | None, list[dict] | None, str | None]:
     """
-    Parse the AI's structured response. Returns (chat_message, itinerary_list_or_none, suggestions_list_or_none).
-    - If <action>respond</action>: return (content of <response>, None, suggestions if present)
-    - If <action>update_itinerary</action>: return (content of <response>, parsed itinerary list, suggestions if present)
-    - Fallback: return (raw text, extracted itinerary if any, None)
+    Parse the AI's structured response. Returns (chat_message, itinerary_list_or_none, suggestions_list_or_none, destination_or_none).
+    - If <action>respond</action>: return (content of <response>, None, suggestions if present, destination if present)
+    - If <action>update_itinerary</action>: return (content of <response>, parsed itinerary list, suggestions if present, destination if present)
+    - Fallback: return (raw text, extracted itinerary if any, None, destination if present)
     """
     if not text:
-        return ("", None, None)
+        return ("", None, None, None)
     text = text.strip()
     action_match = re.search(
         r"<action>\s*(.+?)\s*</action>", text, re.DOTALL | re.IGNORECASE
@@ -1417,6 +1433,7 @@ def _parse_structured_response(
     itinerary_match = re.search(
         r"<itinerary>\s*([\s\S]*?)\s*</itinerary>", text, re.DOTALL | re.IGNORECASE
     )
+    destination = _parse_destination(text)
     action = (action_match.group(1).strip().lower() if action_match else "").replace(
         " ", "_"
     )
@@ -1427,12 +1444,12 @@ def _parse_structured_response(
         json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", itinerary_block)
         raw_json = json_match.group(1).strip() if json_match else itinerary_block
         parsed = _parse_itinerary_json(raw_json)
-        return (response_text, parsed, suggestions)
+        return (response_text, parsed, suggestions, destination)
     if action == "respond" or action == "respond_only":
-        return (response_text, None, suggestions)
+        return (response_text, None, suggestions, destination)
     # Fallback: no structured format, try to extract itinerary from raw response
     parsed = _extract_itinerary_from_response(text)
-    return (text, parsed, None)
+    return (text, parsed, None, destination)
 
 
 def _extract_itinerary_from_response(text: str) -> list[dict] | None:
@@ -1655,7 +1672,7 @@ async def websocket_chat(
                         await drain_task
                     except asyncio.CancelledError:
                         pass
-                chat_message, itinerary_list, suggestions_list = (
+                chat_message, itinerary_list, suggestions_list, destination_update = (
                     _parse_structured_response(ai_text)
                 )
                 # Retry with JSON-only prompt if update_itinerary was intended but parse failed
@@ -1683,6 +1700,8 @@ async def websocket_chat(
                             chat_message = ITINERARY_DONE_MESSAGE
                     except Exception as retry_err:
                         logger.warning("OpenRouter: JSON retry failed: %s", retry_err)
+                if destination_update:
+                    update_trip_destination(trip_id, destination_update)
                 if itinerary_list:
                     set_itinerary(trip_id, json.dumps(itinerary_list))
                     payload_it = {
@@ -1690,9 +1709,23 @@ async def websocket_chat(
                         "trip_id": trip_id,
                         "itinerary": itinerary_list,
                     }
+                    if destination_update:
+                        payload_it["destination"] = destination_update
                     for ws in room:
                         try:
                             await ws.send_json(payload_it)
+                        except Exception:
+                            pass
+                elif destination_update:
+                    for ws in room:
+                        try:
+                            await ws.send_json(
+                                {
+                                    "type": "trip_update",
+                                    "trip_id": trip_id,
+                                    "destination": destination_update,
+                                }
+                            )
                         except Exception:
                             pass
                 if not chat_message:
