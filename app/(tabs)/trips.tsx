@@ -11,7 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import Animated, { FadeIn, FadeInDown, FadeInRight } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeInRight, FadeInUp } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 
@@ -119,14 +119,21 @@ export default function TripsScreen() {
         style={[styles.container, { backgroundColor: colors.background }]}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
-        <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
-          <Text style={[styles.headerLabel, { color: colors.textSecondary }]}>Your adventures</Text>
-          <Text style={[styles.title, { color: colors.text }]}>Your trips</Text>
-          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-            {uniqueTrips.length === 0
-              ? 'Trips you create or join will appear here'
-              : `${uniqueTrips.length} trip${uniqueTrips.length === 1 ? '' : 's'}`}
-          </Text>
+        <View style={styles.header}>
+          <Animated.View entering={FadeInUp.duration(320).delay(0)}>
+            <Text style={[styles.headerLabel, { color: colors.textSecondary }]}>Your adventures</Text>
+          </Animated.View>
+          <Animated.View entering={FadeInUp.duration(360).delay(40)}>
+            <Text style={[styles.title, { color: colors.text }]}>Your trips</Text>
+          </Animated.View>
+          <Animated.View entering={FadeInUp.duration(360).delay(80)}>
+            <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+              {uniqueTrips.length === 0
+                ? 'Trips you create or join will appear here'
+                : `${uniqueTrips.length} trip${uniqueTrips.length === 1 ? '' : 's'}`}
+            </Text>
+          </Animated.View>
+          <Animated.View entering={FadeInUp.duration(360).delay(120)}>
           <View style={styles.quickActions}>
             <Pressable
               style={({ pressed }) => [
@@ -140,25 +147,9 @@ export default function TripsScreen() {
               <IconSymbol name="link" size={20} color="#FFFFFF" />
               <Text style={styles.quickActionPrimaryText}>Join trip</Text>
             </Pressable>
-            {uniqueTrips.length > 0 && (
-              <Pressable
-                style={({ pressed }) => [
-                  styles.quickActionSecondary,
-                  { backgroundColor: colors.surface, borderColor: colors.border },
-                  pressed && styles.buttonPressed,
-                ]}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  router.push('/create');
-                }}
-                accessibilityRole="button"
-                accessibilityLabel="Create trip">
-                <IconSymbol name="plus.circle.fill" size={20} color={colors.tint} />
-                <Text style={[styles.quickActionSecondaryText, { color: colors.text }]}>Create trip</Text>
-              </Pressable>
-            )}
           </View>
-        </Animated.View>
+          </Animated.View>
+        </View>
 
       {tripsLoading && uniqueTrips.length === 0 && (
         <Animated.View entering={FadeInDown.springify()} style={styles.loadingCard}>
@@ -337,24 +328,10 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     borderRadius: Radius.lg,
   },
-  quickActionSecondary: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: Spacing.md,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-  },
   quickActionPrimaryText: {
     fontFamily: 'DMSans_600SemiBold',
     fontSize: 16,
     color: '#FFFFFF',
-  },
-  quickActionSecondaryText: {
-    fontFamily: 'DMSans_600SemiBold',
-    fontSize: 16,
   },
   buttonPressed: {
     opacity: 0.9,

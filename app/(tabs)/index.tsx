@@ -188,11 +188,6 @@ export default function HomeScreen() {
     router.push(`/trip/${tripId}`);
   };
 
-  const handleJoinTrip = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push({ pathname: '/trips', params: { openJoin: '1' } });
-  };
-
   return (
     <TabScreenWrapper>
     <Animated.ScrollView
@@ -222,33 +217,6 @@ export default function HomeScreen() {
             value={searchQuery}
             onChangeText={setSearchQuery}
           />
-        </View>
-        </Animated.View>
-        <Animated.View entering={FadeInUp.duration(360).delay(120)}>
-        <View style={styles.quickActions}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.quickActionPrimary,
-              { backgroundColor: colors.tint },
-              pressed && styles.quickActionPressed,
-            ]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push('/create');
-            }}>
-            <IconSymbol name="plus.circle.fill" size={20} color="#FFFFFF" />
-            <Text style={styles.quickActionPrimaryText}>Create trip</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [
-              styles.quickActionSecondary,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-              pressed && styles.quickActionPressed,
-            ]}
-            onPress={handleJoinTrip}>
-            <IconSymbol name="link" size={20} color={colors.tint} />
-            <Text style={[styles.quickActionSecondaryText, { color: colors.text }]}>Join trip</Text>
-          </Pressable>
         </View>
         </Animated.View>
       </View>
@@ -395,41 +363,6 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     fontSize: 16,
     paddingVertical: 4,
-  },
-  quickActions: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-  },
-  quickActionPrimary: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: Spacing.md,
-    borderRadius: Radius.lg,
-  },
-  quickActionSecondary: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: Spacing.md,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-  },
-  quickActionPressed: {
-    opacity: 0.9,
-  },
-  quickActionPrimaryText: {
-    fontFamily: 'DMSans_600SemiBold',
-    fontSize: 16,
-    color: '#FFFFFF',
-  },
-  quickActionSecondaryText: {
-    fontFamily: 'DMSans_600SemiBold',
-    fontSize: 16,
   },
   section: {
     marginBottom: Spacing.xl,
