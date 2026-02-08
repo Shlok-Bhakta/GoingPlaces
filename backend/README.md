@@ -11,6 +11,15 @@ source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+**Gemini (@gemini in chat):** The `google-genai` package is required. If you see `No module named 'google'`, install deps again in the same environment you use to run uvicorn:
+
+```bash
+pip install -r requirements.txt
+# or: pip install google-genai
+```
+
+Set `EXPO_PUBLIC_GEMINI_API_KEY` or `GEMINI_API_KEY` in the project’s `.env.local` (or in `backend/.env`) so the backend can call Gemini when someone types @gemini.
+
 ## Run
 
 ```bash

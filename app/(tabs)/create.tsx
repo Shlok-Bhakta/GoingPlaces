@@ -1,24 +1,24 @@
-import React, { useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  StyleSheet,
-  ScrollView,
-  Pressable,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-} from 'react-native';
-import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import {
+    ActivityIndicator,
+    KeyboardAvoidingView,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
+} from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Spacing, Radius } from '@/constants/theme';
-import { useUser } from '@/contexts/user-context';
-import { useTrips } from '@/contexts/trips-context';
+import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/contexts/theme-context';
+import { useTrips } from '@/contexts/trips-context';
+import { useUser } from '@/contexts/user-context';
 
 const STEPS = ['Details', 'Invite'];
 

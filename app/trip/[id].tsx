@@ -17,7 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Spacing, Radius } from '@/constants/theme';
-import { useTrips, type ItineraryDay } from '@/contexts/trips-context';
+import { useTrips, type ItineraryDay, type Itinerary } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
 import { useUser } from '@/contexts/user-context';
 
@@ -47,6 +47,30 @@ function formatDividerLabel(iso: string, prevIso?: string): string {
 
 function sameSender(a: ChatMessage, b: ChatMessage): boolean {
   return a.user_id ? a.user_id === b.user_id : a.name === b.name && a.isAI === b.isAI;
+}
+
+/** Normalize backend itinerary JSON to app Itinerary type */
+function normalizeItinerary(raw: unknown): Itinerary {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((day): day is Record<string, unknown> => day != null && typeof day === 'object')
+    .map((day, i) => ({
+      id: typeof day.id === 'string' ? day.id : `day-${i + 1}`,
+      dayNumber: typeof day.dayNumber === 'number' ? day.dayNumber : i + 1,
+      title: typeof day.title === 'string' ? day.title : `Day ${i + 1}`,
+      date: typeof day.date === 'string' ? day.date : undefined,
+      activities: Array.isArray(day.activities)
+        ? (day.activities as Record<string, unknown>[])
+            .filter((a): a is Record<string, unknown> => a != null && typeof a === 'object')
+            .map((a, j) => ({
+              id: typeof a.id === 'string' ? a.id : `act-${j + 1}`,
+              time: typeof a.time === 'string' ? a.time : undefined,
+              title: typeof a.title === 'string' ? a.title : '',
+              description: typeof a.description === 'string' ? a.description : undefined,
+              location: typeof a.location === 'string' ? a.location : undefined,
+            }))
+        : [],
+    }));
 }
 
 const TABS = ['Chat', 'Plan', 'Costs', 'Map', 'Album'] as const;
@@ -282,6 +306,44 @@ function createStyles(colors: typeof Colors.light) {
       color: colors.textTertiary,
       marginTop: 2,
     },
+    mentionDropdown: {
+      position: 'absolute',
+      left: Spacing.md,
+      right: Spacing.md + 44 + Spacing.sm,
+      bottom: '100%',
+      marginBottom: 4,
+      backgroundColor: colors.surface,
+      borderRadius: Radius.lg,
+      borderWidth: 1,
+      borderColor: colors.borderLight,
+      maxHeight: 200,
+      zIndex: 10,
+    },
+    mentionOption: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.md,
+      gap: Spacing.sm,
+    },
+    mentionOptionText: {
+      fontFamily: 'DMSans_500Medium',
+      fontSize: 15,
+      color: colors.text,
+    },
+    typingBubble: {
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.md,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
+    typingDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: colors.textTertiary,
+    },
   });
 }
 
@@ -307,7 +369,7 @@ const FALLBACK_MESSAGES: ChatMessage[] = [
 export default function TripDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { getTrip } = useTrips();
+  const { getTrip, updateTrip } = useTrips();
   const { user } = useUser();
   const { colors } = useTheme();
   const trip = id ? getTrip(id) : null;
@@ -315,6 +377,9 @@ export default function TripDetailScreen() {
 
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
   const [message, setMessage] = useState('');
+  const [mentionVisible, setMentionVisible] = useState(false);
+  const [mentionFilter, setMentionFilter] = useState('');
+  const [geminiTyping, setGeminiTyping] = useState(false);
   const messagesScrollRef = useRef<ScrollView>(null);
   const [messages, setMessages] = useState<ChatMessage[]>(
     CHAT_WS_BASE ? [] : FALLBACK_MESSAGES
@@ -322,6 +387,28 @@ export default function TripDetailScreen() {
   const wsRef = useRef<WebSocket | null>(null);
 
   const userDisplayName = user ? `${user.firstName} ${user.lastName}`.trim() || 'You' : 'You';
+
+  // Mention options: Gemini first, then unique names from messages (group chat members)
+  useEffect(() => {
+    if (geminiTyping) {
+      setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
+    }
+  }, [geminiTyping]);
+
+  const mentionOptions = useMemo(() => {
+    const names = new Set<string>();
+    messages.forEach((m) => {
+      const n = (m.name || '').trim();
+      if (n && n !== 'Gemini') names.add(n);
+    });
+    const list: { id: string; name: string }[] = [{ id: 'gemini', name: 'Gemini' }];
+    Array.from(names)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((name) => list.push({ id: name, name }));
+    const f = (mentionFilter || '').toLowerCase();
+    if (!f) return list;
+    return list.filter((o) => o.name.toLowerCase().startsWith(f));
+  }, [messages, mentionFilter]);
 
   useEffect(() => {
     if (!CHAT_WS_BASE || !id) return;
@@ -344,13 +431,27 @@ export default function TripDetailScreen() {
               timestamp: m.created_at || new Date().toISOString(),
             }))
           );
+          if (data.itinerary && Array.isArray(data.itinerary) && id) {
+            const itinerary = normalizeItinerary(data.itinerary);
+            if (itinerary.length > 0) updateTrip(id, { itinerary });
+          }
+        } else if (data.type === 'typing' && data.user_name === 'Gemini') {
+          setGeminiTyping(true);
         } else if (data.type === 'message' && data.message) {
           const m = data.message;
+          if (m.user_name === 'Gemini') setGeminiTyping(false);
           setMessages((prev) => [
             ...prev,
             { id: String(m.id), content: m.content, isAI: m.is_ai, name: m.user_name || 'Unknown', user_id: m.user_id ?? '', timestamp: m.created_at || new Date().toISOString() },
           ]);
           setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
+        } else if (data.type === 'itinerary' && data.itinerary && Array.isArray(data.itinerary) && id) {
+          setGeminiTyping(false);
+          const itinerary = normalizeItinerary(data.itinerary);
+          if (itinerary.length > 0) {
+            updateTrip(id, { itinerary });
+            setActiveTab('Plan');
+          }
         }
       } catch (_) {}
     };
@@ -383,11 +484,45 @@ export default function TripDetailScreen() {
 
   const insets = useSafeAreaInsets();
 
+  const handleMessageChange = (text: string) => {
+    setMessage(text);
+    const lastAt = text.lastIndexOf('@');
+    if (lastAt === -1) {
+      setMentionVisible(false);
+      setMentionFilter('');
+      return;
+    }
+    const after = text.slice(lastAt + 1);
+    if (/\s/.test(after)) {
+      setMentionVisible(false);
+      setMentionFilter('');
+      return;
+    }
+    setMentionVisible(true);
+    setMentionFilter(after);
+  };
+
+  const completeMention = (option: { id: string; name: string }) => {
+    const lastAt = message.lastIndexOf('@');
+    if (lastAt === -1) {
+      setMentionVisible(false);
+      return;
+    }
+    const insert = option.id === 'gemini' ? 'gemini' : option.name;
+    const newText = message.slice(0, lastAt + 1) + insert + ' ';
+    setMessage(newText);
+    setMentionVisible(false);
+    setMentionFilter('');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
   const handleSendMessage = () => {
     if (!message.trim()) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const text = message.trim();
     setMessage('');
+    setMentionVisible(false);
+    setMentionFilter('');
 
     if (CHAT_WS_BASE && wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ content: text, is_ai: false }));
@@ -480,7 +615,10 @@ export default function TripDetailScreen() {
               const isFromMe = (m: ChatMessage) =>
                 (m.user_id && currentUserId && m.user_id === currentUserId) || (!CHAT_WS_BASE && !m.isAI);
 
-              const items: { type: 'divider'; key: string; label: string } | { type: 'msg'; msg: ChatMessage; showName: boolean; groupedWithNext: boolean }[] = [];
+              type ChatListItem =
+                | { type: 'divider'; key: string; label: string }
+                | { type: 'msg'; msg: ChatMessage; showName: boolean; groupedWithNext: boolean };
+              const items: ChatListItem[] = [];
               for (let i = 0; i < messages.length; i++) {
                 const msg = messages[i];
                 const prev = messages[i - 1];
@@ -498,71 +636,116 @@ export default function TripDetailScreen() {
                 items.push({ type: 'msg', msg, showName, groupedWithNext });
               }
 
-              return items.map((item, idx) => {
-                if (item.type === 'divider') {
-                  return (
-                    <View key={item.key} style={styles.timeDivider}>
-                      <Text style={styles.timeDividerText}>{item.label}</Text>
-                    </View>
-                  );
-                }
-                const { msg, showName, groupedWithNext } = item;
-                const fromMe = isFromMe(msg);
-                return (
-                  <Animated.View
-                    key={msg.id}
-                    entering={FadeInDown.delay(idx * 20).springify()}
-                    style={[
-                      styles.messageRow,
-                      fromMe ? styles.messageRowUser : styles.messageRowAI,
-                      groupedWithNext && styles.messageRowTight,
-                    ]}>
-                    <View
-                      style={[
-                        styles.messageBubbleWrapper,
-                        fromMe ? styles.messageBubbleWrapperUser : styles.messageBubbleWrapperAI,
-                      ]}>
-                      {showName && (
-                        <Text
-                          style={[
-                            styles.messageName,
-                            fromMe ? styles.messageNameRight : styles.messageNameLeft,
-                          ]}>
-                          {msg.name}
-                        </Text>
-                      )}
-                      <View
+              return (
+                <>
+                  {items.map((item, idx) => {
+                    if (item.type === 'divider') {
+                      return (
+                        <View key={item.key} style={styles.timeDivider}>
+                          <Text style={styles.timeDividerText}>{item.label}</Text>
+                        </View>
+                      );
+                    }
+                    const { msg, showName, groupedWithNext } = item;
+                    const fromMe = isFromMe(msg);
+                    return (
+                      <Animated.View
+                        key={msg.id}
+                        entering={FadeInDown.delay(idx * 20).springify()}
                         style={[
-                          styles.messageBubble,
-                          fromMe ? styles.bubbleUser : styles.bubbleAI,
+                          styles.messageRow,
+                          fromMe ? styles.messageRowUser : styles.messageRowAI,
+                          groupedWithNext && styles.messageRowTight,
                         ]}>
-                        <Text
+                        <View
                           style={[
-                            styles.messageText,
-                            fromMe ? styles.messageTextUser : styles.messageTextAI,
+                            styles.messageBubbleWrapper,
+                            fromMe ? styles.messageBubbleWrapperUser : styles.messageBubbleWrapperAI,
                           ]}>
-                          {msg.content}
-                        </Text>
+                          {showName && (
+                            <Text
+                              style={[
+                                styles.messageName,
+                                fromMe ? styles.messageNameRight : styles.messageNameLeft,
+                              ]}>
+                              {msg.name}
+                            </Text>
+                          )}
+                          <View
+                            style={[
+                              styles.messageBubble,
+                              fromMe ? styles.bubbleUser : styles.bubbleAI,
+                            ]}>
+                            <Text
+                              style={[
+                                styles.messageText,
+                                fromMe ? styles.messageTextUser : styles.messageTextAI,
+                              ]}>
+                              {msg.content}
+                            </Text>
+                          </View>
+                        </View>
+                      </Animated.View>
+                    );
+                  })}
+                  {geminiTyping && (
+                    <View style={[styles.messageRow, styles.messageRowAI]}>
+                      <View style={[styles.messageBubbleWrapper, styles.messageBubbleWrapperAI]}>
+                        <Text style={[styles.messageName, styles.messageNameLeft]}>Gemini</Text>
+                        <View style={[styles.messageBubble, styles.bubbleAI, styles.typingBubble]}>
+                          <View style={styles.typingDot} />
+                          <View style={styles.typingDot} />
+                          <View style={styles.typingDot} />
+                        </View>
                       </View>
                     </View>
-                  </Animated.View>
-                );
-              });
+                  )}
+                </>
+              );
             })()}
           </ScrollView>
           <View style={styles.inputRow}>
+            {mentionVisible && mentionOptions.length > 0 && (
+              <View style={styles.mentionDropdown}>
+                <ScrollView
+                  keyboardShouldPersistTaps="handled"
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator={false}
+                  style={{ maxHeight: 200 }}
+                >
+                  {mentionOptions.map((option) => (
+                    <Pressable
+                      key={option.id}
+                      style={({ pressed }) => [
+                        styles.mentionOption,
+                        pressed && { opacity: 0.7 },
+                      ]}
+                      onPress={() => completeMention(option)}
+                    >
+                      {option.id === 'gemini' && (
+                        <IconSymbol name="sparkles" size={18} color={colors.tint} />
+                      )}
+                      <Text style={styles.mentionOptionText}>{option.name}</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
             <TextInput
               style={styles.input}
-              placeholder="Message..."
+              placeholder="Message... (type @ for Gemini or members)"
               placeholderTextColor={colors.textTertiary}
               value={message}
-              onChangeText={setMessage}
+              onChangeText={handleMessageChange}
               multiline
               maxLength={500}
               onKeyPress={(e) => {
-                if (e.nativeEvent.key === 'Enter' && !e.nativeEvent.shiftKey) {
-                  e.preventDefault();
-                  handleSendMessage();
+                if (e.nativeEvent.key === 'Enter') {
+                  const ev = e.nativeEvent as { key: string; shiftKey?: boolean };
+                  if (!ev.shiftKey) {
+                    e.preventDefault();
+                    handleSendMessage();
+                  }
                 }
               }}
             />
