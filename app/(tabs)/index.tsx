@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,8 @@ import {
 import Animated, {
   FadeIn,
   FadeInDown,
+  FadeInRight,
+  FadeInUp,
   useAnimatedScrollHandler,
   useSharedValue,
 } from 'react-native-reanimated';
@@ -18,10 +20,18 @@ import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 
+import { TabScreenWrapper } from '@/components/tab-screen-wrapper';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Spacing, Radius } from '@/constants/theme';
 import { useTrips, type Itinerary } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
+
+function getTimeBasedGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = width * 0.75;
@@ -158,6 +168,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const { addTrip } = useTrips();
   const { colors } = useTheme();
+  const greeting = useMemo(() => getTimeBasedGreeting(), []);
 
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (e) => {
@@ -177,15 +188,27 @@ export default function HomeScreen() {
     router.push(`/trip/${tripId}`);
   };
 
+  const handleJoinTrip = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push({ pathname: '/trips', params: { openJoin: '1' } });
+  };
+
   return (
+    <TabScreenWrapper>
     <Animated.ScrollView
       onScroll={scrollHandler}
       scrollEventThrottle={16}
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
-        <Text style={[styles.greeting, { color: colors.text }]}>Find your next adventure</Text>
+      <View style={styles.header}>
+        <Animated.View entering={FadeInUp.duration(320).delay(0)}>
+          <Text style={[styles.greetingLabel, { color: colors.textSecondary }]}>{greeting}</Text>
+        </Animated.View>
+        <Animated.View entering={FadeInUp.duration(360).delay(40)}>
+          <Text style={[styles.greeting, { color: colors.text }]}>Find your next adventure</Text>
+        </Animated.View>
+        <Animated.View entering={FadeInUp.duration(360).delay(80)}>
         <View style={[styles.searchRow, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <IconSymbol
             name="paperplane.fill"
@@ -200,10 +223,43 @@ export default function HomeScreen() {
             onChangeText={setSearchQuery}
           />
         </View>
-      </Animated.View>
+        </Animated.View>
+        <Animated.View entering={FadeInUp.duration(360).delay(120)}>
+        <View style={styles.quickActions}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.quickActionPrimary,
+              { backgroundColor: colors.tint },
+              pressed && styles.quickActionPressed,
+            ]}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push('/create');
+            }}>
+            <IconSymbol name="plus.circle.fill" size={20} color="#FFFFFF" />
+            <Text style={styles.quickActionPrimaryText}>Create trip</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [
+              styles.quickActionSecondary,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+              pressed && styles.quickActionPressed,
+            ]}
+            onPress={handleJoinTrip}>
+            <IconSymbol name="link" size={20} color={colors.tint} />
+            <Text style={[styles.quickActionSecondaryText, { color: colors.text }]}>Join trip</Text>
+          </Pressable>
+        </View>
+        </Animated.View>
+      </View>
 
-      <Animated.View entering={FadeInDown.delay(150).springify()}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended</Text>
+      <Animated.View entering={FadeInDown.delay(100).duration(380)} style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended</Text>
+          <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
+            Curated getaways you can start in one tap
+          </Text>
+        </View>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -212,74 +268,93 @@ export default function HomeScreen() {
           snapToInterval={CARD_WIDTH + CARD_MARGIN}
           snapToAlignment="start">
           {MOCK_RECOMMENDED.map((item, i) => (
-            <Pressable
+            <Animated.View
               key={item.id}
-              style={({ pressed }) => [
-                styles.recommendedCard,
-                pressed && styles.cardPressed,
-              ]}
-              onPress={() => handleStartTrip(item)}>
-              <LinearGradient
-                colors={item.gradient as [string, string]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.recommendedGradient}>
-                <Text style={styles.recommendedTitle} numberOfLines={2}>
-                  {item.title}
-                </Text>
-                <Text style={styles.recommendedSubtitle}>{item.subtitle}</Text>
-                <View style={styles.recommendedCta}>
-                  <Text style={styles.recommendedCtaText}>Start a trip</Text>
-                  <IconSymbol
-                    name="chevron.right"
-                    size={14}
-                    color="rgba(255,255,255,0.9)"
-                  />
-                </View>
-              </LinearGradient>
-            </Pressable>
+              entering={FadeInRight.delay(120 + i * 80).duration(360)}
+              style={styles.carouselItem}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.recommendedCard,
+                  pressed && styles.cardPressed,
+                ]}
+                onPress={() => handleStartTrip(item)}>
+                <LinearGradient
+                  colors={item.gradient as [string, string]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.recommendedGradient}>
+                  <View style={styles.recommendedBadge}>
+                    <Text style={styles.recommendedBadgeText}>{item.destination}</Text>
+                  </View>
+                  <Text style={styles.recommendedTitle} numberOfLines={2}>
+                    {item.title}
+                  </Text>
+                  <Text style={styles.recommendedSubtitle}>{item.subtitle}</Text>
+                  <View style={styles.recommendedCta}>
+                    <Text style={styles.recommendedCtaText}>Start a trip</Text>
+                    <IconSymbol
+                      name="chevron.right"
+                      size={14}
+                      color="rgba(255,255,255,0.9)"
+                    />
+                  </View>
+                </LinearGradient>
+              </Pressable>
+            </Animated.View>
           ))}
         </ScrollView>
       </Animated.View>
 
-      <Animated.View entering={FadeInDown.delay(300).springify()}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Trending trips</Text>
-        {MOCK_TRENDING.map((item, i) => (
-          <Pressable
-            key={item.id}
-            style={({ pressed }) => [
-              styles.trendingRow,
-              { backgroundColor: colors.surface, borderColor: colors.borderLight },
-              pressed && styles.rowPressed,
-            ]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              const tripId = addTrip({
-                name: item.name,
-                destination: item.destination,
-                status: 'planning',
-                createdBy: 'current',
-              });
-              router.push(`/trip/${tripId}`);
-            }}>
-            <View style={[styles.trendingIcon, { backgroundColor: colors.surfaceMuted }]}>
-              <Text style={styles.trendingEmoji}>🗺️</Text>
-            </View>
-            <View style={styles.trendingContent}>
-              <Text style={[styles.trendingName, { color: colors.text }]}>{item.name}</Text>
-              <Text style={[styles.trendingMeta, { color: colors.textSecondary }]}>
-                {item.destination} · {item.members} members
-              </Text>
-            </View>
-            <IconSymbol
-              name="chevron.right"
-              size={18}
-              color={colors.textTertiary}
-            />
-          </Pressable>
-        ))}
+      <Animated.View entering={FadeInDown.delay(280).duration(380)} style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Trending trips</Text>
+          <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
+            Popular with other travelers
+          </Text>
+        </View>
+        <View style={[styles.trendingCard, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+          {MOCK_TRENDING.map((item, i) => (
+            <Animated.View
+              key={item.id}
+              entering={FadeInDown.delay(320 + i * 55).duration(320)}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.trendingRow,
+                  i < MOCK_TRENDING.length - 1 && styles.trendingRowBorder,
+                  { borderColor: colors.borderLight },
+                  pressed && styles.rowPressed,
+                ]}
+                onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                const tripId = addTrip({
+                  name: item.name,
+                  destination: item.destination,
+                  status: 'planning',
+                  createdBy: 'current',
+                });
+                router.push(`/trip/${tripId}`);
+              }}>
+              <View style={[styles.trendingIcon, { backgroundColor: colors.surfaceMuted }]}>
+                <Text style={styles.trendingEmoji}>🗺️</Text>
+              </View>
+              <View style={styles.trendingContent}>
+                <Text style={[styles.trendingName, { color: colors.text }]}>{item.name}</Text>
+                <Text style={[styles.trendingMeta, { color: colors.textSecondary }]}>
+                  {item.destination} · {item.members} members
+                </Text>
+              </View>
+              <IconSymbol
+                name="chevron.right"
+                size={18}
+                color={colors.textTertiary}
+              />
+            </Pressable>
+            </Animated.View>
+          ))}
+        </View>
       </Animated.View>
     </Animated.ScrollView>
+    </TabScreenWrapper>
   );
 }
 
@@ -295,6 +370,11 @@ const styles = StyleSheet.create({
   header: {
     marginBottom: Spacing.xl,
   },
+  greetingLabel: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 15,
+    marginBottom: 2,
+  },
   greeting: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 26,
@@ -308,6 +388,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
     gap: Spacing.sm,
     borderWidth: 1,
+    marginBottom: Spacing.md,
   },
   searchInput: {
     flex: 1,
@@ -315,23 +396,71 @@ const styles = StyleSheet.create({
     fontSize: 16,
     paddingVertical: 4,
   },
+  quickActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  quickActionPrimary: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.lg,
+  },
+  quickActionSecondary: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+  },
+  quickActionPressed: {
+    opacity: 0.9,
+  },
+  quickActionPrimaryText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 16,
+    color: '#FFFFFF',
+  },
+  quickActionSecondaryText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 16,
+  },
+  section: {
+    marginBottom: Spacing.xl,
+  },
+  sectionHeader: {
+    marginBottom: Spacing.md,
+  },
   sectionTitle: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 20,
-    marginBottom: Spacing.md,
+    marginBottom: 2,
+  },
+  sectionSubtitle: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
   },
   carousel: {
     gap: CARD_MARGIN,
-    paddingBottom: Spacing.md,
+    paddingBottom: Spacing.sm,
+  },
+  carouselItem: {
+    marginRight: 0,
   },
   recommendedCard: {
     width: CARD_WIDTH,
-    height: 180,
+    height: 192,
     borderRadius: Radius.xl,
     overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.12,
     shadowRadius: 12,
     elevation: 4,
   },
@@ -342,6 +471,20 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: Spacing.lg,
     justifyContent: 'flex-end',
+  },
+  recommendedBadge: {
+    position: 'absolute',
+    top: Spacing.md,
+    right: Spacing.md,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: Radius.sm,
+  },
+  recommendedBadgeText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.95)',
   },
   recommendedTitle: {
     fontFamily: 'Fraunces_600SemiBold',
@@ -365,13 +508,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#FFFFFF',
   },
+  trendingCard: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
   trendingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: Radius.lg,
     padding: Spacing.md,
-    marginBottom: Spacing.sm,
-    borderWidth: 1,
+  },
+  trendingRowBorder: {
+    borderBottomWidth: 1,
   },
   rowPressed: {
     opacity: 0.9,

@@ -11,14 +11,15 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeInRight } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 
+import { TabScreenWrapper } from '@/components/tab-screen-wrapper';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { TripCard } from '@/components/trip-card';
 import { Spacing, Radius } from '@/constants/theme';
-import { useTrips } from '@/contexts/trips-context';
+import { useTrips, type Trip, type TripStatus } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
 import { useUser } from '@/contexts/user-context';
 
@@ -29,12 +30,13 @@ export default function TripsScreen() {
   const { colors } = useTheme();
   const { user } = useUser();
   const router = useRouter();
+  const { openJoin } = useLocalSearchParams<{ openJoin?: string }>();
   const [joinModalVisible, setJoinModalVisible] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [joinLoading, setJoinLoading] = useState(false);
   const joinCodeInputRef = useRef<TextInput>(null);
 
-  const finishJoin = (trip: { id: string; name: string; destination: string; status: string; createdBy: string; createdAt: number }) => {
+  const finishJoin = (trip: Trip) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     addTripFromApi(trip);
     setJoinModalVisible(false);
@@ -47,6 +49,10 @@ export default function TripsScreen() {
     setJoinCode('');
     setJoinModalVisible(true);
   };
+
+  useEffect(() => {
+    if (openJoin === '1') setJoinModalVisible(true);
+  }, [openJoin]);
 
   useEffect(() => {
     if (joinModalVisible) {
@@ -73,11 +79,11 @@ export default function TripsScreen() {
       });
       if (res.ok) {
         const trip = await res.json();
-        const localTrip = {
+        const localTrip: Trip = {
           id: trip.id,
           name: trip.name,
           destination: trip.destination ?? 'TBD',
-          status: trip.status ?? 'planning',
+          status: (trip.status ?? 'planning') as TripStatus,
           createdBy: trip.createdBy ?? '',
           createdAt: typeof trip.createdAt === 'number' ? trip.createdAt : Date.now(),
         };
@@ -108,42 +114,72 @@ export default function TripsScreen() {
 
   return (
     <>
+      <TabScreenWrapper>
       <ScrollView
         style={[styles.container, { backgroundColor: colors.background }]}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
         <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
+          <Text style={[styles.headerLabel, { color: colors.textSecondary }]}>Your adventures</Text>
           <Text style={[styles.title, { color: colors.text }]}>Your trips</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             {uniqueTrips.length === 0
               ? 'Trips you create or join will appear here'
               : `${uniqueTrips.length} trip${uniqueTrips.length === 1 ? '' : 's'}`}
           </Text>
-          <Pressable
-            style={({ pressed }) => [
-              styles.joinButton,
-              { backgroundColor: colors.tint },
-              pressed && styles.buttonPressed,
-            ]}
-            onPress={handleOpenJoinModal}
-            accessibilityRole="button"
-            accessibilityLabel="Join trip">
-            <IconSymbol name="link" size={20} color="#FFFFFF" />
-            <Text style={styles.joinButtonText}>Join trip</Text>
-          </Pressable>
+          <View style={styles.quickActions}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.quickActionPrimary,
+                { backgroundColor: colors.tint },
+                pressed && styles.buttonPressed,
+              ]}
+              onPress={handleOpenJoinModal}
+              accessibilityRole="button"
+              accessibilityLabel="Join trip">
+              <IconSymbol name="link" size={20} color="#FFFFFF" />
+              <Text style={styles.quickActionPrimaryText}>Join trip</Text>
+            </Pressable>
+            {uniqueTrips.length > 0 && (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.quickActionSecondary,
+                  { backgroundColor: colors.surface, borderColor: colors.border },
+                  pressed && styles.buttonPressed,
+                ]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  router.push('/create');
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Create trip">
+                <IconSymbol name="plus.circle.fill" size={20} color={colors.tint} />
+                <Text style={[styles.quickActionSecondaryText, { color: colors.text }]}>Create trip</Text>
+              </Pressable>
+            )}
+          </View>
         </Animated.View>
 
       {tripsLoading && uniqueTrips.length === 0 && (
-        <Animated.View entering={FadeInDown.springify()} style={styles.loadingRow}>
-          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading your trips…</Text>
+        <Animated.View entering={FadeInDown.springify()} style={styles.loadingCard}>
+          <View style={[styles.loadingCardInner, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+            <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading your trips…</Text>
+          </View>
         </Animated.View>
       )}
 
       {!tripsLoading && currentTrips.length > 0 && (
-        <Animated.View entering={FadeInDown.delay(100).springify()}>
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>Current</Text>
+        <Animated.View entering={FadeInDown.delay(100).springify()} style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Current</Text>
+            <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
+              Trips you're planning or traveling on
+            </Text>
+          </View>
           {currentTrips.map((trip, i) => (
-            <TripCard key={trip.id} trip={trip} index={i} />
+            <Animated.View key={trip.id} entering={FadeInRight.delay(80 + i * 60).springify()}>
+              <TripCard trip={trip} index={i} />
+            </Animated.View>
           ))}
         </Animated.View>
       )}
@@ -152,9 +188,16 @@ export default function TripsScreen() {
         <Animated.View
           entering={FadeInDown.delay(200).springify()}
           style={styles.pastSection}>
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>Past trips</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Past trips</Text>
+            <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
+              Trips you've completed
+            </Text>
+          </View>
           {pastTrips.map((trip, i) => (
-            <TripCard key={trip.id} trip={trip} index={currentTrips.length + i} />
+            <Animated.View key={trip.id} entering={FadeInRight.delay(80 + i * 60).springify()}>
+              <TripCard trip={trip} index={currentTrips.length + i} />
+            </Animated.View>
           ))}
         </Animated.View>
       )}
@@ -163,14 +206,30 @@ export default function TripsScreen() {
         <Animated.View
           entering={FadeInDown.delay(200).springify()}
           style={styles.empty}>
-          <Text style={styles.emptyEmoji}>✈️</Text>
-          <Text style={[styles.emptyText, { color: colors.text }]}>No trips yet</Text>
-          <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
-            Tap Create to start planning your next adventure
-          </Text>
+          <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+            <Text style={styles.emptyEmoji}>✈️</Text>
+            <Text style={[styles.emptyText, { color: colors.text }]}>No trips yet</Text>
+            <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
+              Create a trip to start planning, or join one with a code from a friend
+            </Text>
+            <Pressable
+              style={({ pressed }) => [
+                styles.emptyCta,
+                { backgroundColor: colors.tint },
+                pressed && styles.buttonPressed,
+              ]}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push('/create');
+              }}>
+              <Text style={styles.emptyCtaText}>Create your first trip</Text>
+              <IconSymbol name="chevron.right" size={18} color="#FFFFFF" />
+            </Pressable>
+          </View>
         </Animated.View>
       )}
     </ScrollView>
+      </TabScreenWrapper>
 
       <Modal
         visible={joinModalVisible}
@@ -186,9 +245,10 @@ export default function TripsScreen() {
             <Pressable
               style={[styles.modalContent, { backgroundColor: colors.background }]}
               onPress={(e) => e.stopPropagation()}>
+              <Text style={[styles.modalLabel, { color: colors.textSecondary }]}>Enter code</Text>
               <Text style={[styles.modalTitle, { color: colors.text }]}>Join trip</Text>
               <Text style={[styles.modalSubtitle, { color: colors.textSecondary }]}>
-                Enter the 4-digit code
+                Ask your friend for the 4-digit code, then enter it below
               </Text>
               <TextInput
                 ref={joinCodeInputRef}
@@ -249,6 +309,11 @@ const styles = StyleSheet.create({
   header: {
     marginBottom: Spacing.xl,
   },
+  headerLabel: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 15,
+    marginBottom: 2,
+  },
   title: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 28,
@@ -259,7 +324,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: Spacing.md,
   },
-  joinButton: {
+  quickActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  quickActionPrimary: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -267,28 +337,71 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     borderRadius: Radius.lg,
   },
-  joinButtonText: {
+  quickActionSecondary: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+  },
+  quickActionPrimaryText: {
     fontFamily: 'DMSans_600SemiBold',
-    fontSize: 17,
+    fontSize: 16,
     color: '#FFFFFF',
+  },
+  quickActionSecondaryText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 16,
   },
   buttonPressed: {
     opacity: 0.9,
   },
+  section: {
+    marginBottom: Spacing.lg,
+  },
+  sectionHeader: {
+    marginBottom: Spacing.md,
+  },
   sectionTitle: {
     fontFamily: 'Fraunces_600SemiBold',
-    fontSize: 18,
-    marginBottom: Spacing.md,
+    fontSize: 20,
+    marginBottom: 2,
+  },
+  sectionSubtitle: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
   },
   pastSection: {
     marginTop: Spacing.xl,
   },
-  empty: {
+  loadingCard: {
+    marginBottom: Spacing.lg,
+  },
+  loadingCardInner: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
     alignItems: 'center',
-    paddingVertical: Spacing.xxl,
+  },
+  loadingText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 15,
+  },
+  empty: {
+    paddingVertical: Spacing.lg,
+  },
+  emptyCard: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    padding: Spacing.xl,
+    alignItems: 'center',
   },
   emptyEmoji: {
-    fontSize: 64,
+    fontSize: 56,
     marginBottom: Spacing.md,
   },
   emptyText: {
@@ -300,15 +413,21 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     fontSize: 15,
     textAlign: 'center',
-    paddingHorizontal: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.xl,
   },
-  loadingRow: {
-    paddingVertical: Spacing.xl,
+  emptyCta: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: Radius.lg,
   },
-  loadingText: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 15,
+  emptyCtaText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 16,
+    color: '#FFFFFF',
   },
   modalOverlay: {
     flex: 1,
@@ -322,9 +441,14 @@ const styles = StyleSheet.create({
     maxWidth: 400,
   },
   modalContent: {
-    borderRadius: Radius.lg,
+    borderRadius: Radius.xl,
     padding: Spacing.xl,
     width: '100%',
+  },
+  modalLabel: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    marginBottom: 2,
   },
   modalTitle: {
     fontFamily: 'Fraunces_600SemiBold',

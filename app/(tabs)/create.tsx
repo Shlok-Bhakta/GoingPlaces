@@ -12,9 +12,10 @@ import {
     TextInput,
     View,
 } from 'react-native';
-import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
 
+import { TabScreenWrapper } from '@/components/tab-screen-wrapper';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/contexts/theme-context';
@@ -108,10 +109,11 @@ export default function CreateTripScreen() {
   const canProceed = step === 0 ? name.trim().length > 0 : true;
 
   return (
+    <TabScreenWrapper>
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <View style={styles.header}>
+      <Animated.View entering={FadeIn.duration(300)} style={styles.header}>
         {step > 0 && (
           <Pressable
             style={styles.backButton}
@@ -124,7 +126,11 @@ export default function CreateTripScreen() {
             <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
           </Pressable>
         )}
+        <Text style={[styles.headerLabel, { color: colors.textSecondary }]}>New adventure</Text>
         <Text style={[styles.headerTitle, { color: colors.text }]}>Create trip</Text>
+        <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
+          {step === 0 ? 'Give your trip a name — you can add details later' : 'Share the code so friends can join'}
+        </Text>
         <View style={styles.stepDots}>
           {STEPS.map((_, i) => (
             <View
@@ -137,7 +143,7 @@ export default function CreateTripScreen() {
             />
           ))}
         </View>
-      </View>
+      </Animated.View>
 
       <ScrollView
         style={styles.scroll}
@@ -148,17 +154,19 @@ export default function CreateTripScreen() {
           <Animated.View
             entering={FadeInDown.springify()}
             style={styles.stepContent}>
-            <Text style={[styles.stepTitle, { color: colors.text }]}>Trip details</Text>
-            <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              Enter a trip name. You can edit it later.
-            </Text>
-            <TextInput
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
-              placeholder="Trip name"
-              placeholderTextColor={colors.textTertiary}
-              value={name}
-              onChangeText={setName}
-            />
+            <View style={[styles.stepCard, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+              <Text style={[styles.stepTitle, { color: colors.text }]}>Trip details</Text>
+              <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
+                Enter a trip name. You can edit it later in trip settings.
+              </Text>
+              <TextInput
+                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                placeholder="e.g. Weekend in Big Sur"
+                placeholderTextColor={colors.textTertiary}
+                value={name}
+                onChangeText={setName}
+              />
+            </View>
           </Animated.View>
         )}
 
@@ -166,39 +174,41 @@ export default function CreateTripScreen() {
           <Animated.View
             entering={FadeInDown.springify()}
             style={styles.stepContent}>
-            <Text style={[styles.stepTitle, { color: colors.text }]}>Invite friends</Text>
-            <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              Share this code with your friends. They can enter it in the Join Trip screen.
-            </Text>
-            <Pressable onPress={handleCopyCode} disabled={!joinCode || joinCodeLoading}>
-              <View style={[styles.codeBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                {joinCodeLoading ? (
-                  <ActivityIndicator size="large" color={colors.tint} style={styles.codeLoader} />
-                ) : joinCode ? (
-                  <>
-                    <Text style={[styles.joinCode, { color: colors.tint }]}>{joinCode}</Text>
-                    <Text style={[styles.tapToCopy, { color: colors.textTertiary }]}>Tap to copy</Text>
-                    <Animated.View 
-                      style={[
-                        StyleSheet.absoluteFill,
-                        styles.flashOverlay,
-                        flashStyle
-                      ]} 
-                      pointerEvents="none"
-                    />
-                  </>
-                ) : (
-                  <Text style={[styles.codeFallback, { color: colors.textSecondary }]}>
-                    Couldn't load code. Try again later.
-                  </Text>
-                )}
-              </View>
-            </Pressable>
+            <View style={[styles.stepCard, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+              <Text style={[styles.stepTitle, { color: colors.text }]}>Invite friends</Text>
+              <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
+                Share this code with your friends. They can enter it on the Trips tab under Join trip.
+              </Text>
+              <Pressable onPress={handleCopyCode} disabled={!joinCode || joinCodeLoading}>
+                <View style={[styles.codeBox, { backgroundColor: colors.background, borderColor: colors.border }]}>
+                  {joinCodeLoading ? (
+                    <ActivityIndicator size="large" color={colors.tint} style={styles.codeLoader} />
+                  ) : joinCode ? (
+                    <>
+                      <Text style={[styles.joinCode, { color: colors.tint }]}>{joinCode}</Text>
+                      <Text style={[styles.tapToCopy, { color: colors.textTertiary }]}>Tap to copy</Text>
+                      <Animated.View 
+                        style={[
+                          StyleSheet.absoluteFill,
+                          styles.flashOverlay,
+                          flashStyle
+                        ]} 
+                        pointerEvents="none"
+                      />
+                    </>
+                  ) : (
+                    <Text style={[styles.codeFallback, { color: colors.textSecondary }]}>
+                      Couldn't load code. Try again later.
+                    </Text>
+                  )}
+                </View>
+              </Pressable>
+            </View>
           </Animated.View>
         )}
       </ScrollView>
 
-      <View style={[styles.footer, { borderTopColor: colors.borderLight, backgroundColor: colors.background }]}>
+      <Animated.View entering={FadeIn.delay(150).duration(300)} style={[styles.footer, { borderTopColor: colors.borderLight, backgroundColor: colors.background }]}>
         <Pressable
           style={({ pressed }) => [
             styles.primaryButton,
@@ -211,9 +221,13 @@ export default function CreateTripScreen() {
           <Text style={styles.primaryButtonText}>
             {step === 0 && isCreating ? '…' : step === STEPS.length - 1 ? 'Go to trip' : 'Continue'}
           </Text>
+          {canProceed && step < STEPS.length - 1 && !isCreating && (
+            <IconSymbol name="chevron.right" size={20} color="#FFFFFF" />
+          )}
         </Pressable>
-      </View>
+      </Animated.View>
     </KeyboardAvoidingView>
+    </TabScreenWrapper>
   );
 }
 
@@ -230,16 +244,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    marginBottom: Spacing.sm,
+    marginBottom: Spacing.md,
     alignSelf: 'flex-start',
+    paddingVertical: Spacing.sm,
+    paddingRight: Spacing.sm,
+    borderRadius: Radius.md,
+    borderWidth: 0,
   },
   backText: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 17,
   },
+  headerLabel: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 15,
+    marginBottom: 2,
+  },
   headerTitle: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 28,
+  },
+  headerSubtitle: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 15,
+    marginTop: 4,
+    marginBottom: Spacing.sm,
   },
   stepDots: {
     flexDirection: 'row',
@@ -264,14 +293,19 @@ const styles = StyleSheet.create({
   stepContent: {
     gap: Spacing.md,
   },
+  stepCard: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    padding: Spacing.lg,
+    gap: Spacing.md,
+  },
   stepTitle: {
     fontFamily: 'Fraunces_600SemiBold',
-    fontSize: 24,
+    fontSize: 20,
   },
   stepSubtitle: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 15,
-    marginBottom: Spacing.sm,
   },
   input: {
     fontFamily: 'DMSans_400Regular',
@@ -317,9 +351,12 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
   },
   primaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
     paddingVertical: Spacing.md,
     borderRadius: Radius.lg,
-    alignItems: 'center',
   },
   buttonPressed: {
     opacity: 0.9,
