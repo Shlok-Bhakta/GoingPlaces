@@ -108,20 +108,22 @@ export function TripCard({
           )}
         </View>
         <View style={styles.content}>
-          <View style={styles.header}>
-            <Text style={styles.name} numberOfLines={1}>
-              {trip.name}
-            </Text>
-            <View style={[styles.statusPill, { backgroundColor: statusColor + '22' }]}>
-              <Text style={[styles.statusText, { color: statusColor }]}>
-                {trip.status.charAt(0).toUpperCase() + trip.status.slice(1)}
+          <View style={styles.textBackground}>
+            <View style={styles.header}>
+              <Text style={styles.name} numberOfLines={1}>
+                {trip.name}
               </Text>
+              <View style={[styles.statusPill, { backgroundColor: statusColor + '22' }]}>
+                <Text style={[styles.statusText, { color: statusColor }]}>
+                  {trip.status.charAt(0).toUpperCase() + trip.status.slice(1)}
+                </Text>
+              </View>
             </View>
+            <Text style={styles.destination} numberOfLines={1}>
+              {trip.destination}
+            </Text>
+            <Text style={styles.date}>{dateRange}</Text>
           </View>
-          <Text style={styles.destination} numberOfLines={1}>
-            {trip.destination}
-          </Text>
-          <Text style={styles.date}>{dateRange}</Text>
           {trip.members && trip.members.length > 0 && (
             <View style={styles.avatarStack}>
               {trip.members.slice(0, 3).map((m, i) => (
@@ -190,9 +192,19 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.7)',
   },
   content: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: CARD_HEIGHT / 2,
+    flexDirection: 'column',
+  },
+  textBackground: {
     flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
     justifyContent: 'flex-end',
-    padding: Spacing.md,
   },
   header: {
     flexDirection: 'row',
