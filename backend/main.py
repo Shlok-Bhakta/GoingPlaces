@@ -52,7 +52,9 @@ from google_places import (
     search_places as gp_search_places,
     get_place_details as gp_get_place_details,
     get_distance_matrix as gp_get_distance_matrix,
+    get_directions as gp_get_directions,
 )
+from amadeus import search_flights as amadeus_search_flights, search_hotels as amadeus_search_hotels
 
 # Load .env.local from project root so EXPO_PUBLIC_OPENROUTER_API_KEY is available
 _load_env_paths = [
@@ -143,6 +145,13 @@ def startup() -> None:
     else:
         logger.warning(
             "Google Maps: no API key (set EXPO_PUBLIC_GOOGLE_MAPS_API_KEY in .env.local for realistic itinerary tools)"
+        )
+    amadeus_key = os.environ.get("EXPO_PUBLIC_AMADEUS_API_KEY") or os.environ.get("AMADEUS_API_KEY")
+    if amadeus_key:
+        logger.info("Amadeus: API key loaded for hotel/flight search (LLM tools)")
+    else:
+        logger.warning(
+            "Amadeus: no API key (set EXPO_PUBLIC_AMADEUS_API_KEY and EXPO_PUBLIC_AMADEUS_API_SECRET in .env.local for hotel/flight pricing)"
         )
 
 
@@ -338,6 +347,20 @@ class PutItineraryBody(BaseModel):
     itinerary: list[dict[str, Any]]
 
 
+class AddToPlanSuggestion(BaseModel):
+    title: str
+    description: str | None = None
+    location: str | None = None
+    dayLabel: str | None = None
+    time: str | None = None
+    replaceActivityId: str | None = None
+    replaceTitle: str | None = None
+
+
+class AddToPlanResolveBody(BaseModel):
+    suggestion: AddToPlanSuggestion
+
+
 @app.put("/trips/{trip_id}/itinerary")
 async def put_trip_itinerary(trip_id: str, body: PutItineraryBody) -> dict[str, Any]:
     """Save itinerary for a trip and broadcast to all clients in the trip's WebSocket room."""
@@ -358,6 +381,27 @@ async def put_trip_itinerary(trip_id: str, body: PutItineraryBody) -> dict[str, 
     for ws in dead:
         room.discard(ws)
     return {"ok": True}
+
+
+@app.post("/trips/{trip_id}/add-to-plan/resolve")
+def add_to_plan_resolve(trip_id: str, body: AddToPlanResolveBody) -> dict[str, Any]:
+    """Run add-to-plan through LLM to detect conflicts and return resolution (add itinerary or conflict + button options)."""
+    raw = get_itinerary(trip_id)
+    current_itinerary: list[dict] = []
+    if raw:
+        try:
+            current_itinerary = json.loads(raw)
+            if not isinstance(current_itinerary, list):
+                current_itinerary = []
+        except json.JSONDecodeError:
+            pass
+    suggestion = body.suggestion.model_dump()
+    result = _call_add_to_plan_resolve_sync(
+        current_itinerary,
+        suggestion,
+        trip_info=db_get_trip(trip_id),
+    )
+    return result
 
 
 # --- Google Places / Distance Matrix (for realistic trip planning; also used by LLM tools) ---
@@ -404,6 +448,45 @@ def api_distance_matrix(body: DistanceMatrixBody) -> dict[str, Any]:
     )
 
 
+# --- Amadeus hotel and flight search ---
+@app.get("/amadeus/flights")
+def api_search_flights(
+    origin: str = Query(..., min_length=1),
+    destination: str = Query(..., min_length=1),
+    departure_date: str = Query(..., min_length=1),
+    adults: int = Query(1, ge=1, le=9),
+    return_date: str | None = Query(None),
+    max_results: int = Query(10, ge=1, le=25),
+) -> dict[str, Any]:
+    """Search for flight offers. Accepts city names or IATA codes. Dates in YYYY-MM-DD."""
+    return amadeus_search_flights(
+        origin=origin,
+        destination=destination,
+        departure_date=departure_date,
+        adults=adults,
+        return_date=return_date,
+        max_results=max_results,
+    )
+
+
+@app.get("/amadeus/hotels")
+def api_search_hotels(
+    city: str = Query(..., min_length=1),
+    check_in: str = Query(..., min_length=1),
+    check_out: str = Query(..., min_length=1),
+    adults: int = Query(1, ge=1, le=9),
+    max_results: int = Query(10, ge=1, le=25),
+) -> dict[str, Any]:
+    """Search for hotel offers in a city. Accepts city name or IATA code. Dates in YYYY-MM-DD."""
+    return amadeus_search_hotels(
+        city=city,
+        check_in=check_in,
+        check_out=check_out,
+        adults=adults,
+        max_results=max_results,
+    )
+
+
 # --- OpenRouter (@gemini) integration: google/gemini-3-flash-preview via OpenRouter API (OpenAI-compatible) ---
 OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 
@@ -417,6 +500,13 @@ Choose ONE based on the user's request:
 
 When in doubt: if they're ASKING (what, how, summarize, tell me) or asking to REPLACE one item with options → RESPOND_ONLY (with suggestions + replace fields for replace). If they're REQUESTING full changes (add, remove, let's plan) → UPDATE_ITINERARY.
 
+## Trip dates (UPDATE_ITINERARY)
+
+When creating or updating an itinerary, you MUST have concrete dates for the trip:
+- **Extract dates from the user** when they mention them (e.g. "March 15–17", "next weekend", "Dec 20 to 22", "we arrive Friday and leave Sunday", "3 days starting the 10th").
+- **If dates are unclear or missing**: Do NOT output UPDATE_ITINERARY. Use RESPOND_ONLY instead and ask the user clearly, e.g. "When is your trip? What are the start and end dates?" or "What date does Day 1 start? I'll need the exact dates so I can show them on the plan."
+- **Every day in the itinerary MUST have a date** in YYYY-MM-DD format. Set the **date** field for each day (Day 1 = first day, Day 2 = second, etc.). The app displays this date above "Day X" for each day.
+
 ## Step 2: Output in this format
 
 For RESPOND_ONLY, output:
@@ -424,6 +514,8 @@ For RESPOND_ONLY, output:
 <response>Your friendly response here. Use the existing itinerary from context to answer questions about the current plan.</response>
 
 When you list options for the user to choose from, you MUST also output a <suggestions> block so they can tap to add or replace in the plan without replying. You MAY output many suggestions in one message (e.g. options for Day 1 dinner and Day 2 lunch). Use the same order as in your response.
+
+**CRITICAL for flight/hotel options:** When you list flight or hotel options from search_flights/search_hotels, you MUST include a suggestion for EVERY option you mention—including budget options, multi-stop flights, and cheaper alternatives. Never omit any option; if you list 3 flights in your response, you MUST have 3 suggestions. Always display prices in US dollars ($), never euros (€).
 
 **Every suggestion must specify day and time when adding:** So the app adds each option to the correct slot, every suggestion MUST include **dayLabel** (e.g. "Day 1", "Day 2", "Friday") and **time** (e.g. "6:00 PM", "12:00 PM") when the user asked for options for specific days/meals. When the user asks for "2 meals" or "surprises for Day 1 and Day 2", output multiple suggestions: some with dayLabel "Day 1" and time for that meal (e.g. "6:00 PM" for dinner), others with dayLabel "Day 2" and time for that meal (e.g. "12:00 PM" for lunch). In your response text, clearly say which options are for which day and time (e.g. "For Day 1 dinner: Fog Harbor, Scoma's. For Day 2 lunch: Gott's, Slanted Door.").
 
@@ -445,7 +537,7 @@ For UPDATE_ITINERARY, output:
 ```
 </itinerary>
 
-Itinerary JSON structure (each day: id, dayNumber, title, date optional, activities array; each activity: id, time optional, title, description optional, location optional):
+Itinerary JSON structure (each day: id, dayNumber, title, date required in YYYY-MM-DD, activities array; each activity: id, time optional, title, description optional, location optional):
 [{"id":"day-1","dayNumber":1,"title":"Day 1","date":"YYYY-MM-DD","activities":[{"id":"act-1","time":"9:00 AM","title":"Title","description":"","location":""}]}]
 
 **CRITICAL for UPDATE_ITINERARY:** You are given the current itinerary in the context below. When the user asks to ADD something (e.g. arrival/departure flight times, a new activity, a new day), your <itinerary> output MUST be the COMPLETE plan: include EVERY day and EVERY activity that is already in the current itinerary, unchanged, PLUS your new or modified items. Never output only the new items—that would replace the whole plan and delete everything else. If the user says "add X", start from the full current itinerary, add X, then output that full array.
@@ -453,12 +545,15 @@ Itinerary JSON structure (each day: id, dayNumber, title, date optional, activit
 ## Tools for realistic plans (UPDATE_ITINERARY)
 
 When the user wants to create or update an itinerary, use the provided tools to make the plan realistic:
-1. **search_places**: Search for real venues (e.g. "Academy of Sciences San Francisco", "breakfast cafe Napa"). Use the trip destination or city name in queries. Call this to find real place_id, name, and address for activities.
+1. **search_places**: Search for real venues (museums, restaurants, landmarks—not hotel pricing). Use for "Academy of Sciences San Francisco", "breakfast cafe Napa", etc. Do NOT use for "hotels in X" or "where to stay"; use search_hotels (Amadeus) for those. Returns place_id, name, address for activities.
 2. **search_food_places**: Search for restaurants by food type and city (e.g. food_type="sushi", location="San Francisco"). Use when the user wants a meal (lunch, dinner, breakfast) but didn't name a specific place. Returns name, address, rating. If unsure which restaurant to add, call this and then ask the user in your response: list the options with name, full address, and rating and ask which they prefer or if you should add the top-rated one.
 3. **get_place_details**: After search_places or search_food_places, call this with a place_id to get opening hours (weekday_text), full address, rating, user_ratings_total. Use for every place you add so the itinerary has real name, address, and rating.
 4. **get_distance_matrix**: Given two or more addresses or place names (or "lat,lng"), get driving/walking distance and duration between them. Use this to ensure travel time between activities is realistic and to order activities logically.
+5. **get_directions**: Get a full route between two places (or A→B via waypoints) with estimated drive/walk time and distance. Use for roadtrip planning: e.g. "San Francisco to LA", "NYC to Boston via Philadelphia". Returns total duration, total distance, and per-leg breakdown. Prefer this when the user asks for a road trip, driving route, or "how long to drive from X to Y".
+6. **search_flights**: Search for real flight prices between origin and destination. Use when the user asks about flights, airline options, or flight costs. Accepts city names (e.g. "San Francisco", "Paris") or IATA codes (SFO, PAR). Returns flight offers with price in USD, carrier, departure/arrival times. Always present prices in US dollars ($). When presenting options, compare each flight's departure and arrival times with the current itinerary—explicitly state if a flight CONFLICTS with existing activities (e.g. "⚠️ Conflicts: departs 12:30 PM but you have lunch at 12:00 PM on Day 1") or fits well (e.g. "✓ No conflict with your schedule").
+7. **search_hotels**: Search for hotel prices in a city (Amadeus). Use when the user asks about hotels, accommodation, or where to stay. Accepts city name or IATA code. Returns hotel offers with name, price in USD, chain. Dates must be YYYY-MM-DD (use trip start/end dates from context). Always present prices in US dollars ($). **Prefer search_hotels over search_places for hotel/accommodation queries** so the user gets real prices.
 
-Use these tools when building or updating an itinerary so that places, hours, and travel times are accurate. You may call multiple tools before outputting the final <itinerary>.
+Use these tools when building or updating an itinerary so that places, hours, travel times, flights, and hotels are accurate. You may call multiple tools before outputting the final <itinerary>.
 
 ## CRITICAL: Use real place data in the itinerary
 
@@ -469,6 +564,8 @@ When you have called search_places and/or get_place_details, you MUST use that r
 - **Activity location**: Set the location field to the formatted_address from the API for each venue.
 
 If you searched for a restaurant or venue and got results, the itinerary MUST list that place by name and include its address and rating in the description. Always call get_place_details for any place you add so you have opening hours and rating to include.
+
+When the user asks about flights or hotels, call search_flights or search_hotels to get real pricing. In your response, include the prices and options you found. **For flights:** Use the itinerary in context to check each option's departure/arrival times against existing activities on the same day. Clearly say if a flight conflicts (e.g. overlaps with a meal, meeting, or other activity) or fits the schedule. Include this in both your response text and in each suggestion's description. If updating the itinerary, add flight or hotel activities with the real data (airline, price, times for flights; hotel name, price for hotels).
 
 ## Food / restaurant activities – required data and when to ask the user
 
@@ -490,7 +587,7 @@ PLACES_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "search_places",
-            "description": "Search for real places/venues by text query. Use for finding museums, restaurants, landmarks, etc. in a city. Returns place_id, name, formatted_address, rating, user_ratings_total. Include city or destination in the query (e.g. 'sushi restaurant San Francisco'). Use the exact name and rating in the itinerary.",
+            "description": "Search for real places/venues by text query (museums, restaurants, landmarks—NOT hotel pricing). Use for 'sushi restaurant San Francisco', 'Golden Gate Bridge', etc. For hotel/accommodation options with prices, use search_hotels instead. Returns place_id, name, formatted_address, rating.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -583,7 +680,118 @@ PLACES_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_directions",
+            "description": "Get a route between two places with estimated travel time and distance (Google Directions API). Use for roadtrip planning: driving/walking from origin to destination, optionally via waypoints. Returns total_duration_text, total_duration_seconds, total_distance_text, total_distance_meters, and legs (per segment). Prefer when user asks for a road trip, driving route, or 'how long to drive from X to Y'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "origin": {
+                        "type": "string",
+                        "description": "Start address, city name, or 'lat,lng' (e.g. 'San Francisco', 'NYC', '37.7749,-122.4194')",
+                    },
+                    "destination": {
+                        "type": "string",
+                        "description": "End address, city name, or 'lat,lng' (e.g. 'Los Angeles', 'Boston')",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "Travel mode: driving (default), walking, bicycling, transit",
+                        "default": "driving",
+                    },
+                    "waypoints": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of intermediate stops (addresses or city names) for multi-stop roadtrips",
+                    },
+                },
+                "required": ["origin", "destination"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_flights",
+            "description": "Search for flight offers with real prices between origin and destination. Use when the user asks about flights, airline options, flight costs, or wants to add flights to the itinerary. Accepts city names (e.g. 'San Francisco', 'Paris') or IATA codes (SFO, PAR). Returns offers with price, currency, carrier, departure/arrival times. After getting results, compare each flight's times with the current itinerary and clearly state conflicts (e.g. overlaps with lunch at 12 PM) or that it fits the schedule.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "origin": {
+                        "type": "string",
+                        "description": "Origin city or airport, e.g. 'San Francisco', 'SFO', 'NYC'",
+                    },
+                    "destination": {
+                        "type": "string",
+                        "description": "Destination city or airport, e.g. 'Paris', 'PAR', 'CDG'",
+                    },
+                    "departure_date": {
+                        "type": "string",
+                        "description": "Departure date in YYYY-MM-DD format",
+                    },
+                    "adults": {
+                        "type": "integer",
+                        "description": "Number of adult passengers (default 1)",
+                        "default": 1,
+                    },
+                    "return_date": {
+                        "type": "string",
+                        "description": "Return date for round trip in YYYY-MM-DD (optional)",
+                    },
+                },
+                "required": ["origin", "destination", "departure_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_hotels",
+            "description": "Search for hotel offers with real prices in a city (Amadeus). Use when the user asks about hotels, accommodation, where to stay, or 'highly rated hotels'. Prefer this over search_places for any hotel query. Accepts city name or IATA code; use trip start/end dates for check_in and check_out when available.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "City name or IATA code, e.g. 'San Francisco', 'Paris', 'NYC'",
+                    },
+                    "check_in": {
+                        "type": "string",
+                        "description": "Check-in date YYYY-MM-DD. Use the first day date from the trip itinerary when available.",
+                    },
+                    "check_out": {
+                        "type": "string",
+                        "description": "Check-out date YYYY-MM-DD. Use the last day date from the trip itinerary when available.",
+                    },
+                    "adults": {
+                        "type": "integer",
+                        "description": "Number of adults (default 1)",
+                        "default": 1,
+                    },
+                },
+                "required": ["city", "check_in", "check_out"],
+            },
+        },
+    },
 ]
+
+
+def _log_tool_result(name: str, arguments: dict[str, Any], out: dict[str, Any]) -> None:
+    """Log API call args and result for debugging (Google Maps, Amadeus, etc.)."""
+    try:
+        result_str = json.dumps(out, indent=2, default=str)
+        if len(result_str) > 3000:
+            result_str = result_str[:3000] + "\n... (truncated)"
+        logger.info(
+            "[API] %s | args=%s | result=%s",
+            name,
+            json.dumps(arguments, default=str),
+            result_str,
+        )
+    except Exception:
+        logger.info("[API] %s | args=%s | result=(serialize failed)", name, arguments)
 
 
 def _execute_tool(name: str, arguments: dict[str, Any]) -> str:
@@ -595,6 +803,7 @@ def _execute_tool(name: str, arguments: dict[str, Any]) -> str:
                 location=arguments.get("location"),
                 max_results=int(arguments.get("max_results", 5)),
             )
+            _log_tool_result(name, arguments, out)
         elif name == "search_food_places":
             food_type = (arguments.get("food_type") or "").strip()
             location = (arguments.get("location") or "").strip()
@@ -607,19 +816,51 @@ def _execute_tool(name: str, arguments: dict[str, Any]) -> str:
                     location=location,
                     max_results=int(arguments.get("max_results", 5)),
                 )
+            _log_tool_result(name, arguments, out)
         elif name == "get_place_details":
             out = gp_get_place_details(place_id=arguments.get("place_id", ""))
+            _log_tool_result(name, arguments, out)
         elif name == "get_distance_matrix":
             out = gp_get_distance_matrix(
                 origins=arguments.get("origins") or [],
                 destinations=arguments.get("destinations") or [],
                 mode=arguments.get("mode", "driving"),
             )
+            _log_tool_result(name, arguments, out)
+        elif name == "get_directions":
+            out = gp_get_directions(
+                origin=arguments.get("origin", ""),
+                destination=arguments.get("destination", ""),
+                mode=arguments.get("mode", "driving"),
+                waypoints=arguments.get("waypoints"),
+            )
+            _log_tool_result(name, arguments, out)
+        elif name == "search_flights":
+            out = amadeus_search_flights(
+                origin=arguments.get("origin", ""),
+                destination=arguments.get("destination", ""),
+                departure_date=arguments.get("departure_date", ""),
+                adults=int(arguments.get("adults", 1)),
+                return_date=arguments.get("return_date"),
+                max_results=10,
+            )
+            _log_tool_result(name, arguments, out)
+        elif name == "search_hotels":
+            out = amadeus_search_hotels(
+                city=arguments.get("city", ""),
+                check_in=arguments.get("check_in", ""),
+                check_out=arguments.get("check_out", ""),
+                adults=int(arguments.get("adults", 1)),
+                max_results=10,
+            )
+            _log_tool_result(name, arguments, out)
         else:
             out = {"error": f"Unknown tool: {name}"}
+            _log_tool_result(name, arguments, out)
         return json.dumps(out)
     except Exception as e:
         logger.exception("Tool %s failed: %s", name, e)
+        _log_tool_result(name, arguments, {"error": str(e)})
         return json.dumps({"error": str(e)})
 
 
@@ -641,7 +882,7 @@ def _build_chat_messages(history: list[dict]) -> list[dict]:
 
 ITINERARY_DONE_MESSAGE = "I've added your itinerary to the Plan tab! Check the Plan tab to see the full schedule."
 
-JSON_ONLY_PROMPT = """Output ONLY a valid JSON array for the COMPLETE trip itinerary. Include ALL days and activities from the current itinerary in the context above, plus any additions you are making (e.g. flight times). No markdown, no code fence, no other text. Format: [{"id":"day-1","dayNumber":1,"title":"Day 1","date":"YYYY-MM-DD","activities":[{"id":"act-1","time":"9:00 AM","title":"Title","description":"","location":""}]}]. Each day: id, dayNumber, title, date, activities. Each activity: id, time, title, description, location."""
+JSON_ONLY_PROMPT = """Output ONLY a valid JSON array for the COMPLETE trip itinerary. Include ALL days and activities from the current itinerary in the context above, plus any additions you are making (e.g. flight times). No markdown, no code fence, no other text. Format: [{"id":"day-1","dayNumber":1,"title":"Day 1","date":"YYYY-MM-DD","activities":[{"id":"act-1","time":"9:00 AM","title":"Title","description":"","location":""}]}]. Each day: id, dayNumber, title, date (required, YYYY-MM-DD), activities. Each activity: id, time, title, description, location."""
 
 TRIP_INFO_PREFIX = """=== CONTEXT ===
 This conversation is about the trip "{name}" (destination: {destination}).
@@ -667,6 +908,194 @@ ITINERARY_CONTEXT_SUFFIX = """
 --- End context. Conversation: ---
 
 """
+
+ADD_TO_PLAN_RESOLVE_PROMPT = """You are resolving an "add to plan" action. The user tapped a button to add or replace an activity in their trip itinerary.
+
+**Current itinerary (JSON):**
+{current_itinerary_json}
+
+**Suggested activity to add or replace:**
+- title: {title}
+- description: {description}
+- location: {location}
+- dayLabel: {day_label}
+- time: {time}
+- replaceActivityId: {replace_activity_id}
+- replaceTitle: {replace_title}
+
+**Your task — check the full sequence, not just the slot:**
+1. Look at the target day and the **events before and after** the slot being added or replaced. Decide if the change makes sense in context.
+2. **Conflicts to detect:**
+   - Same time slot already has another activity, or times overlap.
+   - **Logical/temporal conflicts with earlier or later events.** Examples:
+     - Replacing an event at 10:00 AM with a "Flight lands at 10:00 AM" means the user cannot be elsewhere at 10. If there is an event **before** 10 (e.g. 9:00 AM "Meeting downtown" or "Breakfast at hotel"), that prior event may be impossible or may need to change/be removed (e.g. they can't be at a meeting at 9 if they're on a plane landing at 10).
+     - Adding a "Flight departs 8:00 AM" when there is already a 9:00 AM activity elsewhere means the 9:00 AM event may need to move or be removed.
+     - Adding a long activity (e.g. "Wine tasting 2–5 PM") when the next event is at 3 PM creates an overlap; the next event may need to move or be removed.
+3. If there is **no conflict** (slot free and sequence still makes sense): output <resolution>add</resolution> and the full <itinerary> with the new/replaced activity.
+4. If there **is** a conflict (same slot, overlap, or sequence doesn't make sense): output <resolution>conflict</resolution>, a clear <message> that mentions both the direct conflict and any **previous/next** events that need to change or be removed (e.g. "Flight lands at 10:00 AM conflicts with the 10:00 AM slot; the event before (9:00 AM Meeting) may need to be moved or removed."), and <resolution_options> as a JSON array. Each option must have "id" and "label". Always include: {{"id": "add_anyway", "label": "Add anyway"}} and {{"id": "cancel", "label": "Cancel"}}. For resolutions that fix the conflict, add options with "id", "label", and "itinerary" (the full resolved itinerary). Examples: {{"id": "remove_previous", "label": "Remove 9:00 AM event and add flight", "itinerary": [...]}}, {{"id": "move_previous", "label": "Move 9:00 AM event to after landing", "itinerary": [...]}}, {{"id": "move_new", "label": "Move flight to 2:00 PM", "itinerary": [...]}}.
+
+**Output format (use only these tags):**
+- No conflict: <resolution>add</resolution><itinerary>\\n```json\\n[full itinerary array]\\n```\\n</itinerary>
+- Conflict: <resolution>conflict</resolution><message>Clear explanation including any prior/next events that need to change or be removed.</message><resolution_options>[JSON array of {{"id":"...","label":"..."}} or {{"id":"...","label":"...","itinerary":[...]}}]</resolution_options>
+
+Itinerary format: list of days, each with id, dayNumber, title, date (optional), activities (list of id, time, title, description, location). Preserve existing activity ids when not replacing. Generate new id for new activities (e.g. act-1234567890-abc).
+"""
+
+
+def _call_add_to_plan_resolve_sync(
+    current_itinerary: list[dict],
+    suggestion: dict[str, Any],
+    trip_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Call LLM to check add-to-plan conflicts and return either add itinerary or conflict + resolution options."""
+    if not OPENROUTER_API_KEY:
+        logger.warning("OpenRouter: no API key set for add-to-plan resolve")
+        return {"action": "add", "itinerary": _apply_suggestion_fallback(current_itinerary, suggestion)}
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+        prompt = ADD_TO_PLAN_RESOLVE_PROMPT.format(
+            current_itinerary_json=json.dumps(current_itinerary, indent=2),
+            title=suggestion.get("title") or "",
+            description=suggestion.get("description") or "",
+            location=suggestion.get("location") or "",
+            day_label=suggestion.get("dayLabel") or "",
+            time=suggestion.get("time") or "",
+            replace_activity_id=suggestion.get("replaceActivityId") or "",
+            replace_title=suggestion.get("replaceTitle") or "",
+        )
+        api_messages = [
+            {"role": "system", "content": "You output only the requested XML tags and JSON. No other text."},
+            {"role": "user", "content": prompt},
+        ]
+        response = client.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            messages=api_messages,
+            max_tokens=4096,
+            temperature=0.3,
+        )
+        if not response or not response.choices:
+            return {"action": "add", "itinerary": _apply_suggestion_fallback(current_itinerary, suggestion)}
+        text = (response.choices[0].message.content or "").strip()
+        return _parse_add_to_plan_resolve_response(text, current_itinerary, suggestion)
+    except Exception as e:
+        logger.exception("Add-to-plan resolve LLM error: %s", e)
+        return {"action": "add", "itinerary": _apply_suggestion_fallback(current_itinerary, suggestion)}
+
+
+def _apply_suggestion_fallback(
+    current_itinerary: list[dict], suggestion: dict[str, Any]
+) -> list[dict]:
+    """Apply suggestion to itinerary locally when LLM is unavailable or parse fails."""
+    new_act = {
+        "id": f"act-{uuid.uuid4().hex[:12]}",
+        "time": (suggestion.get("time") or "").strip() or None,
+        "title": (suggestion.get("title") or "").strip() or "Activity",
+        "description": (suggestion.get("description") or "").strip() or None,
+        "location": (suggestion.get("location") or "").strip() or None,
+    }
+    replace_id = (suggestion.get("replaceActivityId") or "").strip()
+    replace_title = (suggestion.get("replaceTitle") or "").strip()
+    if replace_id or replace_title:
+        for day in current_itinerary:
+            for a in day.get("activities") or []:
+                if (replace_id and a.get("id") == replace_id) or (
+                    replace_title and (a.get("title") or "").strip().lower() == replace_title.lower()
+                ):
+                    a.update(new_act)
+                    a["id"] = a.get("id") or new_act["id"]
+                    return current_itinerary
+        # replace target not found, add to first day
+        if current_itinerary:
+            (current_itinerary[0].setdefault("activities", [])).append(new_act)
+        else:
+            current_itinerary = [{"id": "day-1", "dayNumber": 1, "title": "Day 1", "date": None, "activities": [new_act]}]
+        return current_itinerary
+    day_label = (suggestion.get("dayLabel") or "").strip().lower()
+    target_day = None
+    for d in current_itinerary:
+        if day_label and (
+            (d.get("title") or "").lower().find(day_label) >= 0
+            or ((d.get("date") or "") or "").lower().find(day_label) >= 0
+        ):
+            target_day = d
+            break
+    if not target_day and current_itinerary:
+        target_day = current_itinerary[0]
+    if not target_day:
+        return [{"id": "day-1", "dayNumber": 1, "title": "Day 1", "date": None, "activities": [new_act]}]
+    target_day.setdefault("activities", []).append(new_act)
+    return current_itinerary
+
+
+def _parse_add_to_plan_resolve_response(
+    text: str, current_itinerary: list[dict], suggestion: dict[str, Any]
+) -> dict[str, Any]:
+    """Parse LLM response into action 'add' with itinerary or 'conflict' with message and resolutionOptions."""
+    if not text:
+        return {"action": "add", "itinerary": _apply_suggestion_fallback(current_itinerary, suggestion)}
+    resolution_match = re.search(
+        r"<resolution>\s*(.+?)\s*</resolution>", text, re.DOTALL | re.IGNORECASE
+    )
+    resolution = (resolution_match.group(1).strip().lower() if resolution_match else "").replace(" ", "_")
+    if resolution == "conflict":
+        message_match = re.search(
+            r"<message>\s*([\s\S]*?)\s*</message>", text, re.DOTALL | re.IGNORECASE
+        )
+        message = (message_match.group(1).strip() if message_match else "This time slot is already used.").strip()
+        options_match = re.search(
+            r"<resolution_options>\s*([\s\S]*?)\s*</resolution_options>", text, re.DOTALL | re.IGNORECASE
+        )
+        options_raw = (options_match.group(1).strip() if options_match else "[]").strip()
+        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", options_raw)
+        if json_match:
+            options_raw = json_match.group(1).strip()
+        try:
+            options_data = json.loads(options_raw)
+        except json.JSONDecodeError:
+            options_data = []
+        if not isinstance(options_data, list):
+            options_data = []
+        resolution_options = []
+        for opt in options_data:
+            if not isinstance(opt, dict):
+                continue
+            oid = (opt.get("id") or "").strip()
+            label = (opt.get("label") or "").strip()
+            if not oid or not label:
+                continue
+            item = {"id": oid, "label": label}
+            if "itinerary" in opt and isinstance(opt["itinerary"], list) and len(opt["itinerary"]) > 0:
+                parsed = _parse_itinerary_json(json.dumps(opt["itinerary"]))
+                if parsed:
+                    item["itinerary"] = parsed
+            resolution_options.append(item)
+        if not resolution_options:
+            resolution_options = [
+                {"id": "add_anyway", "label": "Add anyway"},
+                {"id": "cancel", "label": "Cancel"},
+            ]
+        return {
+            "action": "conflict",
+            "message": message,
+            "resolutionOptions": resolution_options,
+        }
+    # resolution add or missing: try to extract itinerary
+    itinerary_match = re.search(
+        r"<itinerary>\s*([\s\S]*?)\s*</itinerary>", text, re.DOTALL | re.IGNORECASE
+    )
+    if itinerary_match:
+        raw = itinerary_match.group(1).strip()
+        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+        raw = json_match.group(1).strip() if json_match else raw
+        parsed = _parse_itinerary_json(raw)
+        if parsed:
+            return {"action": "add", "itinerary": parsed}
+    return {"action": "add", "itinerary": _apply_suggestion_fallback(current_itinerary, suggestion)}
 
 
 def _call_openrouter_sync(
@@ -788,8 +1217,14 @@ def _call_openrouter_sync(
                             status_queue.put_nowait("Checking opening hours...")
                         elif tc.function.name == "get_distance_matrix":
                             status_queue.put_nowait("Getting travel times...")
+                        elif tc.function.name == "get_directions":
+                            status_queue.put_nowait("Getting route...")
+                        elif tc.function.name == "search_flights":
+                            status_queue.put_nowait("Searching for flights...")
+                        elif tc.function.name == "search_hotels":
+                            status_queue.put_nowait("Searching for hotels...")
                         else:
-                            status_queue.put_nowait("Fetching info from Maps...")
+                            status_queue.put_nowait("Fetching info...")
                     except queue.Full:
                         pass
                 try:

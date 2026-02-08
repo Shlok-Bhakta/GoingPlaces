@@ -13,6 +13,7 @@ export const Colors = {
     backgroundElevated: '#FFFFFF',
     surface: '#FFFFFF',
     surfaceMuted: '#F0EDE8',
+    bubbleAI: '#D0CDC6', // darker gray for Gemini/AI chat bubbles
     text: '#1C1C1E',
     textSecondary: '#6B6B6F',
     textTertiary: '#8E8E93',
@@ -33,6 +34,7 @@ export const Colors = {
     backgroundElevated: '#252422',
     surface: '#2D2C2A',
     surfaceMuted: '#252422',
+    bubbleAI: '#1E1D1B', // darker gray for Gemini/AI chat bubbles
     text: '#F5F3F0',
     textSecondary: '#A8A6A3',
     textTertiary: '#7A7875',

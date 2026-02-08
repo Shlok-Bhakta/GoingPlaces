@@ -6,30 +6,65 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Dimensions,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
   RefreshControl,
+  Animated as RNAnimated,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  View,
-  Animated as RNAnimated,
-  Linking,
+  View
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
+import Animated, { FadeInDown, useAnimatedStyle, useSharedValue, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+/** Gemini icon with random rotate animation */
+function AnimatedGeminiIcon({ size = 14 }: { size?: number }) {
+  const rotation = useSharedValue(0);
+
+  useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout>;
+    const scheduleNext = () => {
+      const delay = 1500 + Math.random() * 2500;
+      timeoutId = setTimeout(() => {
+        const rot = (Math.random() > 0.5 ? 1 : -1) * 360;
+        rotation.value = withSequence(
+          withTiming(rot, { duration: 500 }),
+          withTiming(0, { duration: 500 })
+        );
+        scheduleNext();
+      }, delay);
+    };
+    scheduleNext();
+    return () => clearTimeout(timeoutId);
+  }, [rotation]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${rotation.value}deg` }],
+  }));
+
+  return (
+    <Animated.View style={[{ width: size, height: size }, animatedStyle]}>
+      <Image
+        source={require('@/assets/images/gemini-icon.png')}
+        style={{ width: size, height: size }}
+        contentFit="contain"
+      />
+    </Animated.View>
+  );
+}
+
 import ImageViewerOverlay from '@/components/image-viewer-overlay';
-import { IconSymbol } from '@/components/ui/icon-symbol';
 import { MarkdownText } from '@/components/markdown-text';
-import { Colors, Spacing, Radius } from '@/constants/theme';
-import { useTrips, type ItineraryDay, type Itinerary, type ItineraryActivity } from '@/contexts/trips-context';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { Colors, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/contexts/theme-context';
+import { useTrips, type Itinerary, type ItineraryActivity, type ItineraryDay } from '@/contexts/trips-context';
 import { useUser } from '@/contexts/user-context';
 
 const CHAT_WS_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
@@ -59,6 +94,13 @@ type ChatMessage = {
 
 const GROUP_GAP_MS = 5 * 60 * 1000; // 5 min
 const DIVIDER_GAP_MS = 30 * 60 * 1000; // 30 min
+
+/** Format YYYY-MM-DD to readable date, e.g. "Friday, March 15, 2025". */
+function formatDayDate(dateStr: string): string {
+  const d = new Date(dateStr + 'T12:00:00');
+  if (isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+}
 
 // Color palette for chat bubbles (warm, pastel, accessible)
 const USER_COLORS = [
@@ -128,7 +170,7 @@ function normalizeItinerary(raw: unknown): Itinerary {
     }));
 }
 
-const TABS = ['Chat', 'Plan', 'Costs', 'Map', 'Album'] as const;
+const TABS = ['Chat', 'Plan', 'Map', 'Costs', 'Album'] as const;
 
 function createStyles(colors: typeof Colors.light) {
   return StyleSheet.create({
@@ -209,11 +251,17 @@ function createStyles(colors: typeof Colors.light) {
     messageBubbleWrapperUser: { alignItems: 'flex-end' },
     messageBubble: { padding: Spacing.md, borderRadius: Radius.lg, overflow: 'hidden' },
     bubbleUser: { backgroundColor: colors.tint, borderBottomRightRadius: 4 },
-    bubbleAI: { backgroundColor: colors.surfaceMuted, borderBottomLeftRadius: 4 },
+    bubbleAI: { backgroundColor: colors.bubbleAI, borderBottomLeftRadius: 4 },
     messageName: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 12,
       color: colors.textSecondary,
+      marginBottom: 4,
+    },
+    messageNameRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
       marginBottom: 4,
     },
     messageNameLeft: { textAlign: 'left' },
@@ -569,8 +617,18 @@ export default function TripDetailScreen() {
     CHAT_WS_BASE ? [] : FALLBACK_MESSAGES
   );
   const [addedSuggestionKeys, setAddedSuggestionKeys] = useState<Set<string>>(new Set());
+  const [resolvingSuggestionKey, setResolvingSuggestionKey] = useState<string | null>(null);
+  const [addToPlanConflict, setAddToPlanConflict] = useState<{
+    message: string;
+    resolutionOptions: { id: string; label: string; itinerary?: unknown[] }[];
+    suggestionKey: string;
+    msgId: string;
+    suggestionIndex: number;
+    option: SuggestionOption;
+  } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const messageInputRef = useRef<TextInput>(null);
   const tripIdForUploadRef = useRef<string | null>(null);
   tripIdForUploadRef.current = id ?? null;
 
@@ -656,38 +714,28 @@ export default function TripDetailScreen() {
 
   const userDisplayName = user ? `${user.firstName} ${user.lastName}`.trim() || 'You' : 'You';
 
-  const addSuggestionToPlan = useCallback(
-    (msgId: string, suggestionIndex: number, option: SuggestionOption) => {
-      if (!id || !trip) return;
-      const key = `${msgId}-${suggestionIndex}`;
-      if (addedSuggestionKeys.has(key)) return;
-      const current: Itinerary = trip.itinerary ?? [];
+  /** Merge a suggestion into current itinerary (used for add_anyway and fallback). */
+  const mergeSuggestionIntoItinerary = useCallback(
+    (current: Itinerary, option: SuggestionOption): Itinerary => {
       const newActivityBase: Omit<ItineraryActivity, 'id'> = {
         title: option.title,
         description: option.description ?? undefined,
         location: option.location ?? undefined,
       };
-
-      let merged: Itinerary;
-
       const replaceId = option.replaceActivityId?.trim() || null;
       const replaceTitle = option.replaceTitle?.trim() || null;
       const isReplace = !!(replaceId || replaceTitle);
 
       if (isReplace && current.length > 0) {
         let replaced = false;
-        merged = current.map((day) => ({
+        let merged = current.map((day) => ({
           ...day,
           activities: day.activities.map((act) => {
             const matchById = replaceId && act.id === replaceId;
             const matchByTitle = replaceTitle && act.title.trim().toLowerCase() === replaceTitle.toLowerCase();
             if (matchById || matchByTitle) {
               replaced = true;
-              return {
-                ...newActivityBase,
-                id: act.id,
-                time: act.time,
-              } as ItineraryActivity;
+              return { ...newActivityBase, id: act.id, time: act.time } as ItineraryActivity;
             }
             return act;
           }),
@@ -713,49 +761,45 @@ export default function TripDetailScreen() {
               : day
           );
         }
-      } else {
-        let targetDay: ItineraryDay | undefined;
-        if (option.dayLabel) {
-          const label = option.dayLabel.toLowerCase();
-          targetDay = current.find(
-            (d) =>
-              d.title.toLowerCase().includes(label) ||
-              (d.date && d.date.toLowerCase().includes(label))
-          );
-        }
-        if (!targetDay && current.length > 0) targetDay = current[0];
-        if (!targetDay) {
-          targetDay = {
-            id: 'day-1',
-            dayNumber: 1,
-            title: 'Day 1',
-            activities: [],
-          };
-        }
-        const newActivity: ItineraryActivity = {
-          ...newActivityBase,
-          id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          time: option.time ?? undefined,
-        };
-        merged =
-          current.length === 0
-            ? [{ ...targetDay!, activities: [newActivity] }]
-            : current.map((day) =>
-                day.id === targetDay!.id
-                  ? { ...day, activities: [...day.activities, newActivity] }
-                  : day
-              );
+        return merged;
       }
+      let targetDay: ItineraryDay | undefined;
+      if (option.dayLabel) {
+        const label = option.dayLabel.toLowerCase();
+        targetDay = current.find(
+          (d) =>
+            d.title.toLowerCase().includes(label) ||
+            (d.date && d.date.toLowerCase().includes(label))
+        );
+      }
+      if (!targetDay && current.length > 0) targetDay = current[0];
+      if (!targetDay) {
+        targetDay = { id: 'day-1', dayNumber: 1, title: 'Day 1', activities: [] };
+      }
+      const newActivity: ItineraryActivity = {
+        ...newActivityBase,
+        id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        time: option.time ?? undefined,
+      };
+      return current.length === 0
+        ? [{ ...targetDay, activities: [newActivity] }]
+        : current.map((day) =>
+            day.id === targetDay!.id ? { ...day, activities: [...day.activities, newActivity] } : day
+          );
+    },
+    []
+  );
 
-      updateTrip(id, { itinerary: merged });
-      setAddedSuggestionKeys((prev) => new Set(prev).add(key));
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  const applyItineraryToTrip = useCallback(
+    (itinerary: Itinerary) => {
+      if (!id) return;
+      updateTrip(id, { itinerary });
       const base = CHAT_WS_BASE.replace(/\/$/, '');
       fetch(`${base}/trips/${encodeURIComponent(id)}/itinerary`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          itinerary: merged.map((d) => ({
+          itinerary: itinerary.map((d) => ({
             id: d.id,
             dayNumber: d.dayNumber,
             title: d.title,
@@ -770,8 +814,91 @@ export default function TripDetailScreen() {
           })),
         }),
       }).catch(() => {});
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     },
-    [id, trip, updateTrip, addedSuggestionKeys]
+    [id, updateTrip]
+  );
+
+  const addSuggestionToPlan = useCallback(
+    async (msgId: string, suggestionIndex: number, option: SuggestionOption) => {
+      if (!id || !trip) return;
+      const key = `${msgId}-${suggestionIndex}`;
+      if (addedSuggestionKeys.has(key)) return;
+      const current: Itinerary = trip.itinerary ?? [];
+      setResolvingSuggestionKey(key);
+      const base = CHAT_WS_BASE.replace(/\/$/, '');
+      try {
+        const res = await fetch(`${base}/trips/${encodeURIComponent(id)}/add-to-plan/resolve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            suggestion: {
+              title: option.title,
+              description: option.description ?? null,
+              location: option.location ?? null,
+              dayLabel: option.dayLabel ?? null,
+              time: option.time ?? null,
+              replaceActivityId: option.replaceActivityId ?? null,
+              replaceTitle: option.replaceTitle ?? null,
+            },
+          }),
+        });
+        if (!res.ok) throw new Error('Resolve failed');
+        const data = (await res.json()) as {
+          action: 'add' | 'conflict';
+          itinerary?: unknown[];
+          message?: string;
+          resolutionOptions?: { id: string; label: string; itinerary?: unknown[] }[];
+        };
+        if (data.action === 'add' && data.itinerary?.length) {
+          const normalized = normalizeItinerary(data.itinerary);
+          applyItineraryToTrip(normalized);
+          setAddedSuggestionKeys((prev) => new Set(prev).add(key));
+        } else if (data.action === 'conflict' && data.message && data.resolutionOptions?.length) {
+          setAddToPlanConflict({
+            message: data.message,
+            resolutionOptions: data.resolutionOptions,
+            suggestionKey: key,
+            msgId,
+            suggestionIndex,
+            option,
+          });
+        } else {
+          const merged = mergeSuggestionIntoItinerary(current, option);
+          applyItineraryToTrip(merged);
+          setAddedSuggestionKeys((prev) => new Set(prev).add(key));
+        }
+      } catch {
+        const merged = mergeSuggestionIntoItinerary(current, option);
+        applyItineraryToTrip(merged);
+        setAddedSuggestionKeys((prev) => new Set(prev).add(key));
+      } finally {
+        setResolvingSuggestionKey(null);
+      }
+    },
+    [id, trip, addedSuggestionKeys, mergeSuggestionIntoItinerary, applyItineraryToTrip]
+  );
+
+  const resolveAddToPlanConflict = useCallback(
+    (choice: { id: string; label: string; itinerary?: unknown[] }) => {
+      if (!id || !addToPlanConflict) return;
+      const { option, suggestionKey } = addToPlanConflict;
+      if (choice.id === 'cancel') {
+        setAddToPlanConflict(null);
+        return;
+      }
+      const current: Itinerary = trip?.itinerary ?? [];
+      if (choice.itinerary?.length) {
+        const normalized = normalizeItinerary(choice.itinerary);
+        applyItineraryToTrip(normalized);
+      } else if (choice.id === 'add_anyway') {
+        const merged = mergeSuggestionIntoItinerary(current, option);
+        applyItineraryToTrip(merged);
+      }
+      setAddedSuggestionKeys((prev) => new Set(prev).add(suggestionKey));
+      setAddToPlanConflict(null);
+    },
+    [id, trip, addToPlanConflict, mergeSuggestionIntoItinerary, applyItineraryToTrip]
   );
 
   // Wave animation for typing dots when Gemini is typing
@@ -1100,6 +1227,8 @@ export default function TripDetailScreen() {
       ]);
       setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
     }
+    // Refocus the message input so user can keep typing
+    setTimeout(() => messageInputRef.current?.focus(), 50);
   };
 
   const handleAddPictures = async () => {
@@ -1365,13 +1494,22 @@ export default function TripDetailScreen() {
                             fromMe ? styles.messageBubbleWrapperUser : styles.messageBubbleWrapperAI,
                           ]}>
                           {showName && (
-                            <Text
-                              style={[
-                                styles.messageName,
-                                fromMe ? styles.messageNameRight : styles.messageNameLeft,
-                              ]}>
-                              {msg.name}
-                            </Text>
+                            isGemini ? (
+                              <View style={styles.messageNameRow}>
+                                <AnimatedGeminiIcon size={14} />
+                                <Text style={[styles.messageName, styles.messageNameLeft, { marginBottom: 0 }]}>
+                                  {msg.name}
+                                </Text>
+                              </View>
+                            ) : (
+                              <Text
+                                style={[
+                                  styles.messageName,
+                                  fromMe ? styles.messageNameRight : styles.messageNameLeft,
+                                ]}>
+                                {msg.name}
+                              </Text>
+                            )
                           )}
                           <View style={{ position: 'relative' }}>
                             <View
@@ -1379,18 +1517,19 @@ export default function TripDetailScreen() {
                                 styles.messageBubble,
                                 fromMe 
                                   ? styles.bubbleUser 
-                                  : {
-                                      backgroundColor: userColor?.bg,
-                                      borderBottomLeftRadius: 4,
-                                    },
-                                isGemini && { marginBottom: 3 },
+                                  : isGemini 
+                                    ? styles.bubbleAI 
+                                    : {
+                                        backgroundColor: userColor?.bg,
+                                        borderBottomLeftRadius: 4,
+                                      },
                               ]}>
                               <MarkdownText
                                 baseStyle={StyleSheet.flatten([
                                   styles.messageText,
                                   fromMe 
                                     ? styles.messageTextUser 
-                                    : { color: userColor?.text || colors.text },
+                                    : { color: isGemini ? colors.text : (userColor?.text || colors.text) },
                                 ])}
                                 codeStyle={
                                   fromMe
@@ -1402,9 +1541,10 @@ export default function TripDetailScreen() {
                               </MarkdownText>
                               {!fromMe && msg.suggestions && msg.suggestions.length > 0 && (
                                 <View style={styles.suggestionList}>
-                                  {msg.suggestions.map((opt, idx) => {
+                                    {msg.suggestions.map((opt, idx) => {
                                     const suggestionKey = `${msg.id}-${idx}`;
                                     const added = addedSuggestionKeys.has(suggestionKey);
+                                    const resolving = resolvingSuggestionKey === suggestionKey;
                                     return (
                                       <View
                                         key={suggestionKey}
@@ -1435,19 +1575,21 @@ export default function TripDetailScreen() {
                                           onPress={() =>
                                             addSuggestionToPlan(msg.id, idx, opt)
                                           }
-                                          disabled={added}
+                                          disabled={added || resolving}
                                           style={({ pressed }) => [
                                             styles.addToPlanBtn,
-                                            (pressed || added) && { opacity: 0.8 },
+                                            (pressed || added || resolving) && { opacity: 0.8 },
                                           ]}>
                                           <Text style={styles.addToPlanBtnText}>
-                                            {added
-                                              ? opt.replaceActivityId || opt.replaceTitle
-                                                ? 'Replaced'
-                                                : 'Added'
-                                              : opt.replaceActivityId || opt.replaceTitle
-                                                ? 'Replace with this'
-                                                : 'Add to plan'}
+                                            {resolving
+                                              ? 'Checking…'
+                                              : added
+                                                ? opt.replaceActivityId || opt.replaceTitle
+                                                  ? 'Replaced'
+                                                  : 'Added'
+                                                : opt.replaceActivityId || opt.replaceTitle
+                                                  ? 'Replace with this'
+                                                  : 'Add to plan'}
                                           </Text>
                                         </Pressable>
                                       </View>
@@ -1463,6 +1605,8 @@ export default function TripDetailScreen() {
                                 end={{ x: 1, y: 0 }}
                                 style={{
                                   height: 3,
+                                  marginTop: -1,
+                                  marginRight: 10, // shorten gradient line on right (px)
                                   borderBottomLeftRadius: Radius.lg,
                                   borderBottomRightRadius: Radius.lg,
                                 }}
@@ -1476,16 +1620,15 @@ export default function TripDetailScreen() {
                   {geminiTyping && (
                     <View style={[styles.messageRow, styles.messageRowAI]}>
                       <View style={[styles.messageBubbleWrapper, styles.messageBubbleWrapperAI]}>
-                        <Text style={[styles.messageName, styles.messageNameLeft]}>Gemini</Text>
+                        <View style={styles.messageNameRow}>
+                          <AnimatedGeminiIcon size={14} />
+                          <Text style={[styles.messageName, styles.messageNameLeft, { marginBottom: 0 }]}>Gemini</Text>
+                        </View>
                         <View style={{ position: 'relative' }}>
                           <View
                             style={[
                               styles.messageBubble,
-                              {
-                                backgroundColor: getUserColor('gemini', 'Gemini').bg,
-                                borderBottomLeftRadius: 4,
-                                marginBottom: 3,
-                              },
+                              styles.bubbleAI,
                               styles.typingBubble,
                             ]}>
                             <View style={styles.typingDotsRow}>
@@ -1506,6 +1649,8 @@ export default function TripDetailScreen() {
                             end={{ x: 1, y: 0 }}
                             style={{
                               height: 3,
+                              marginTop: -1,
+                              marginRight: 8, // shorten gradient line on right (px)
                               borderBottomLeftRadius: Radius.lg,
                               borderBottomRightRadius: Radius.lg,
                             }}
@@ -1564,7 +1709,7 @@ export default function TripDetailScreen() {
                       onPress={() => completeMention(option)}
                     >
                       {option.id === 'gemini' && (
-                        <IconSymbol name="sparkles" size={18} color={colors.tint} />
+                        <AnimatedGeminiIcon size={18} />
                       )}
                       <Text style={styles.mentionOptionText}>{option.name}</Text>
                     </Pressable>
@@ -1573,6 +1718,7 @@ export default function TripDetailScreen() {
               </View>
             )}
             <TextInput
+              ref={messageInputRef}
               style={styles.input}
               placeholder="Message... (type @ for Gemini or members)"
               placeholderTextColor={colors.textTertiary}
@@ -1622,10 +1768,10 @@ export default function TripDetailScreen() {
               <Text style={styles.placeholderTitle}>Itinerary</Text>
               {trip.itinerary.map((day: ItineraryDay, dayIndex: number) => (
                 <View key={day.id} style={styles.itineraryDay}>
-                  <Text style={styles.itineraryDayTitle}>{day.title}</Text>
                   {day.date != null && day.date !== '' && (
-                    <Text style={styles.itineraryDayDate}>{day.date}</Text>
+                    <Text style={styles.itineraryDayDate}>{formatDayDate(day.date)}</Text>
                   )}
+                  <Text style={styles.itineraryDayTitle}>{day.title}</Text>
                   {day.activities.map((activity) => (
                     <View key={activity.id} style={styles.itineraryActivity}>
                       {activity.time != null && activity.time !== '' && (
@@ -1918,6 +2064,92 @@ export default function TripDetailScreen() {
                   color: colors.accent,
                 }}>
                 Close
+              </Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={!!addToPlanConflict}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAddToPlanConflict(null)}>
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+          onPress={() => setAddToPlanConflict(null)}>
+          <Pressable
+            style={{
+              backgroundColor: colors.surface,
+              borderRadius: Radius.lg,
+              padding: Spacing.xl,
+              width: '90%',
+              maxWidth: 400,
+              alignItems: 'stretch',
+            }}
+            onPress={(e) => e.stopPropagation()}>
+            <Text
+              style={{
+                fontFamily: 'Fraunces_600SemiBold',
+                fontSize: 18,
+                color: colors.text,
+                marginBottom: Spacing.sm,
+              }}>
+              Schedule conflict
+            </Text>
+            <Text
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 15,
+                color: colors.textSecondary,
+                marginBottom: Spacing.lg,
+              }}>
+              {addToPlanConflict?.message}
+            </Text>
+            <View style={{ gap: Spacing.sm }}>
+              {addToPlanConflict?.resolutionOptions.map((opt) => (
+                <Pressable
+                  key={opt.id}
+                  onPress={() => resolveAddToPlanConflict(opt)}
+                  style={({ pressed }) => ({
+                    backgroundColor: pressed ? colors.surfaceMuted : colors.tint,
+                    borderRadius: Radius.md,
+                    paddingVertical: Spacing.sm,
+                    paddingHorizontal: Spacing.md,
+                    alignItems: 'center',
+                    opacity: pressed ? 0.9 : 1,
+                  })}>
+                  <Text
+                    style={{
+                      fontFamily: 'DMSans_600SemiBold',
+                      fontSize: 15,
+                      color: '#FFFFFF',
+                    }}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <Pressable
+              onPress={() => setAddToPlanConflict(null)}
+              style={({ pressed }) => ({
+                marginTop: Spacing.md,
+                paddingVertical: Spacing.sm,
+                alignItems: 'center',
+                opacity: pressed ? 0.6 : 1,
+              })}>
+              <Text
+                style={{
+                  fontFamily: 'DMSans_500Medium',
+                  fontSize: 15,
+                  color: colors.textTertiary,
+                }}>
+                Cancel
               </Text>
             </Pressable>
           </Pressable>
