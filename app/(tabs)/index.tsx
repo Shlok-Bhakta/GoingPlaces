@@ -20,20 +20,59 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Spacing, Radius } from '@/constants/theme';
-import { useTrips } from '@/contexts/trips-context';
+import { useTrips, type Itinerary } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = width * 0.75;
 const CARD_MARGIN = Spacing.md;
 
-const MOCK_RECOMMENDED = [
+/** Recommended trip template: card display + optional details & itinerary */
+type RecommendedTrip = {
+  id: string;
+  title: string;
+  subtitle: string;
+  gradient: [string, string];
+  destination: string;
+  description?: string;
+  highlights?: string[];
+  itinerary?: Itinerary;
+};
+
+const MOCK_RECOMMENDED: RecommendedTrip[] = [
   {
     id: '1',
     title: 'Weekend in Big Sur',
     subtitle: 'Coastal escape · 2 days',
     gradient: ['#7BA88E', '#5B8A72'],
     destination: 'Big Sur, CA',
+    description: 'A relaxed two-day escape along the Central Coast with ocean views, redwoods, and iconic stops.',
+    highlights: ['Pfeiffer Big Sur State Park', 'Bixby Bridge', 'McWay Falls', 'Local restaurants'],
+    itinerary: [
+      {
+        id: 'd1',
+        dayNumber: 1,
+        title: 'Day 1 — Arrival & Coast',
+        date: 'Sat',
+        activities: [
+          { id: 'a1', time: '10:00 AM', title: 'Drive in via Highway 1', description: 'Scenic drive, stop at Bixby Bridge for photos.', location: 'Highway 1' },
+          { id: 'a2', time: '12:00 PM', title: 'Lunch at Nepenthe', description: 'Cliffside restaurant with ocean views.', location: 'Nepenthe, Big Sur' },
+          { id: 'a3', time: '2:30 PM', title: 'McWay Falls overlook', description: 'Short walk to the famous waterfall onto the beach.', location: 'Julia Pfeiffer Burns SP' },
+          { id: 'a4', time: '5:00 PM', title: 'Check-in & evening in Big Sur', description: 'Dinner and stargazing.', location: 'Your lodging' },
+        ],
+      },
+      {
+        id: 'd2',
+        dayNumber: 2,
+        title: 'Day 2 — Redwoods & Home',
+        date: 'Sun',
+        activities: [
+          { id: 'a5', time: '9:00 AM', title: 'Pfeiffer Big Sur State Park', description: 'Hike among redwoods, Pfeiffer Falls trail.', location: 'Pfeiffer Big Sur SP' },
+          { id: 'a6', time: '12:00 PM', title: 'Brunch in Big Sur village', description: 'Cafés and local spots before heading back.', location: 'Big Sur' },
+          { id: 'a7', time: '2:00 PM', title: 'Drive back', description: 'Leisurely return with optional stops.', location: 'Highway 1' },
+        ],
+      },
+    ],
   },
   {
     id: '2',
@@ -41,6 +80,23 @@ const MOCK_RECOMMENDED = [
     subtitle: 'Food & nightlife · 1 day',
     gradient: ['#C45C3E', '#A04028'],
     destination: 'New York, NY',
+    description: 'One packed day of iconic NYC bites and neighborhoods.',
+    highlights: ['Chelsea Market', 'Smorgasburg', 'Little Italy', 'East Village bars'],
+    itinerary: [
+      {
+        id: 'd1',
+        dayNumber: 1,
+        title: 'Day 1 — Full food crawl',
+        date: '1 day',
+        activities: [
+          { id: 'a1', time: '9:00 AM', title: 'Coffee & pastry', description: 'Start in Chelsea or West Village.', location: 'Chelsea / West Village' },
+          { id: 'a2', time: '10:30 AM', title: 'Chelsea Market', description: 'Walk through, grab a bite and snacks.', location: 'Chelsea Market' },
+          { id: 'a3', time: '12:30 PM', title: 'Smorgasburg (weekends) or Essex Market', description: 'Outdoor food market or indoor market.', location: 'Williamsburg / Lower East Side' },
+          { id: 'a4', time: '2:30 PM', title: 'Little Italy / Nolita', description: 'Cannoli, espresso, and people-watching.', location: 'Little Italy' },
+          { id: 'a5', time: '5:00 PM', title: 'East Village bars & dinner', description: 'Pre-dinner drinks, then dinner and nightlife.', location: 'East Village' },
+        ],
+      },
+    ],
   },
   {
     id: '3',
@@ -48,6 +104,45 @@ const MOCK_RECOMMENDED = [
     subtitle: 'Adventure · 3 days',
     gradient: ['#A8B4E0', '#7A8FC9'],
     destination: 'Lake Tahoe, CA',
+    description: 'Three days of skiing and apres in North or South Lake Tahoe.',
+    highlights: ['Heavenly', 'Palisades Tahoe', 'Lake views', 'Casinos & nightlife'],
+    itinerary: [
+      {
+        id: 'd1',
+        dayNumber: 1,
+        title: 'Day 1 — Arrival & first runs',
+        date: 'Fri',
+        activities: [
+          { id: 'a1', time: '8:00 AM', title: 'Drive to Tahoe', description: 'From Bay Area or Reno.', location: '—' },
+          { id: 'a2', time: '12:00 PM', title: 'Check-in & lunch', description: 'Lodge or condo, quick lunch.', location: 'South / North Lake Tahoe' },
+          { id: 'a3', time: '2:00 PM', title: 'Half-day skiing', description: 'Heavenly or Palisades depending on base.', location: 'Resort' },
+          { id: 'a4', time: '6:00 PM', title: 'Dinner & apres', description: 'Village or casino area.', location: 'Village' },
+        ],
+      },
+      {
+        id: 'd2',
+        dayNumber: 2,
+        title: 'Day 2 — Full day on the mountain',
+        date: 'Sat',
+        activities: [
+          { id: 'a5', time: '8:30 AM', title: 'First chair', description: 'Full day skiing or snowboarding.', location: 'Resort' },
+          { id: 'a6', time: '12:00 PM', title: 'Lunch on mountain', description: 'Lodge lunch with lake views.', location: 'Mountain lodge' },
+          { id: 'a7', time: '4:00 PM', title: 'Back to lodging', description: 'Rest, hot tub, or explore town.', location: '—' },
+          { id: 'a8', time: '7:00 PM', title: 'Dinner out', description: 'Local favorite or casino.', location: 'Tahoe' },
+        ],
+      },
+      {
+        id: 'd3',
+        dayNumber: 3,
+        title: 'Day 3 — Morning runs & drive home',
+        date: 'Sun',
+        activities: [
+          { id: 'a9', time: '8:00 AM', title: 'Morning skiing', description: 'A few hours before checkout.', location: 'Resort' },
+          { id: 'a10', time: '11:00 AM', title: 'Check-out', description: 'Pack and load car.', location: 'Lodging' },
+          { id: 'a11', time: '12:00 PM', title: 'Lunch then drive home', description: 'One last meal in Tahoe.', location: 'Tahoe' },
+        ],
+      },
+    ],
   },
 ];
 
@@ -70,13 +165,14 @@ export default function HomeScreen() {
     },
   });
 
-  const handleStartTrip = (item: (typeof MOCK_RECOMMENDED)[0]) => {
+  const handleStartTrip = (item: RecommendedTrip) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const tripId = addTrip({
       name: item.title,
       destination: item.destination,
       status: 'planning',
       createdBy: 'current',
+      ...(item.itinerary && { itinerary: item.itinerary }),
     });
     router.push(`/trip/${tripId}`);
   };

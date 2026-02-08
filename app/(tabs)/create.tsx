@@ -19,7 +19,7 @@ import { useUser } from '@/contexts/user-context';
 import { useTrips } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
 
-const STEPS = ['Basics', 'Destination', 'Generate', 'Invite'];
+const STEPS = ['Details', 'Invite'];
 
 export default function CreateTripScreen() {
   const [step, setStep] = useState(0);
@@ -40,12 +40,17 @@ export default function CreateTripScreen() {
     }
   };
 
+  const handleBack = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (step > 0) setStep(step - 1);
+  };
+
   const handleCreate = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const tripId = addTrip({
-      name: name || 'New Trip',
-      destination: destination || 'TBD',
-      startingCity: startCity || undefined,
+      name: name.trim() || 'New Trip',
+      destination: destination.trim() || 'TBD',
+      startingCity: startCity.trim() || undefined,
       status: 'planning',
       createdBy: user?.id ?? 'current',
     });
@@ -53,7 +58,9 @@ export default function CreateTripScreen() {
   };
 
   const canProceed =
-    step === 0 ? true : step === 1 ? !!destination : true;
+    step === 0
+      ? (name.trim().length > 0 && destination.trim().length > 0)
+      : true;
 
   return (
     <KeyboardAvoidingView
@@ -61,12 +68,16 @@ export default function CreateTripScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={[styles.header, { borderBottomColor: colors.borderLight }]}>
         <Pressable
-          style={styles.closeBtn}
-          onPress={() => {
+          style={styles.headerLeftBtn}
+          onPress={step > 0 ? handleBack : () => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             router.replace('/(tabs)');
           }}>
-          <IconSymbol name="xmark" size={20} color={colors.text} />
+          <IconSymbol
+            name={step > 0 ? 'chevron.left' : 'xmark'}
+            size={20}
+            color={colors.text}
+          />
         </Pressable>
         <Text style={[styles.headerTitle, { color: colors.text }]}>Create trip</Text>
         <View style={styles.stepDots}>
@@ -92,9 +103,9 @@ export default function CreateTripScreen() {
           <Animated.View
             entering={FadeInDown.springify()}
             style={styles.stepContent}>
-            <Text style={[styles.stepTitle, { color: colors.text }]}>Trip basics</Text>
+            <Text style={[styles.stepTitle, { color: colors.text }]}>Trip details</Text>
             <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              You can always edit these later — or skip and start chatting!
+              Enter a trip name and destination to continue. You can edit these later.
             </Text>
             <TextInput
               style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
@@ -110,46 +121,17 @@ export default function CreateTripScreen() {
               value={startCity}
               onChangeText={setStartCity}
             />
-          </Animated.View>
-        )}
-
-        {step === 1 && (
-          <Animated.View
-            entering={FadeInDown.springify()}
-            style={styles.stepContent}>
-            <Text style={[styles.stepTitle, { color: colors.text }]}>Where to?</Text>
-            <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              Search for a destination or pick a mock event
-            </Text>
             <TextInput
               style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
               placeholder="Destination or event"
               placeholderTextColor={colors.textTertiary}
               value={destination}
               onChangeText={setDestination}
-              autoFocus
             />
           </Animated.View>
         )}
 
-        {step === 2 && (
-          <Animated.View
-            entering={FadeInDown.springify()}
-            style={styles.stepContent}>
-            <Text style={[styles.stepTitle, { color: colors.text }]}>Generate with AI</Text>
-            <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              {"We'll create a draft itinerary and suggestions based on your trip"}
-            </Text>
-            <View style={[styles.generatePreview, { backgroundColor: colors.surfaceMuted }]}>
-              <Text style={[styles.generatePlaceholder, { color: colors.textSecondary }]}>
-                Itinerary will be generated when you open the trip and chat with
-                the AI assistant
-              </Text>
-            </View>
-          </Animated.View>
-        )}
-
-        {step === 3 && (
+        {step === 1 && (
           <Animated.View
             entering={FadeInDown.springify()}
             style={styles.stepContent}>
@@ -202,7 +184,7 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.md,
     borderBottomWidth: 1,
   },
-  closeBtn: {
+  headerLeftBtn: {
     position: 'absolute',
     top: 56,
     left: Spacing.lg,
@@ -254,17 +236,6 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.lg,
-  },
-  generatePreview: {
-    borderRadius: Radius.lg,
-    padding: Spacing.xl,
-    minHeight: 120,
-    justifyContent: 'center',
-  },
-  generatePlaceholder: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 15,
-    textAlign: 'center',
   },
   inviteBox: {
     flexDirection: 'row',

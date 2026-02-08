@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,10 +13,11 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Spacing, Radius } from '@/constants/theme';
-import { useTrips } from '@/contexts/trips-context';
+import { useTrips, type ItineraryDay } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
 
 const TABS = ['Chat', 'Plan', 'Costs', 'Map', 'Album'] as const;
@@ -36,6 +37,7 @@ function createStyles(colors: typeof Colors.light) {
       borderBottomColor: colors.borderLight,
     },
     backBtn: { padding: Spacing.sm, marginLeft: -Spacing.sm },
+    settingsBtn: { padding: Spacing.sm, marginRight: -Spacing.sm },
     headerContent: { flex: 1, marginLeft: Spacing.sm },
     tripName: {
       fontFamily: 'Fraunces_600SemiBold',
@@ -60,19 +62,25 @@ function createStyles(colors: typeof Colors.light) {
       marginTop: 2,
     },
     tabScroll: {
-      maxHeight: 48,
+      maxHeight: 50,
+      flexShrink: 0,
       borderBottomWidth: 1,
       borderBottomColor: colors.borderLight,
     },
     tabScrollContent: {
-      paddingHorizontal: Spacing.md,
+      flexDirection: 'row',
+      paddingHorizontal: Spacing.sm,
       paddingVertical: Spacing.sm,
-      gap: Spacing.sm,
+      gap: Spacing.xs,
+      alignItems: 'center',
     },
     tab: {
-      paddingHorizontal: Spacing.md,
+      flex: 1,
       paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.sm,
       borderRadius: Radius.full,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
     tabActive: { backgroundColor: colors.accentMuted },
     tabText: {
@@ -103,7 +111,7 @@ function createStyles(colors: typeof Colors.light) {
       flexDirection: 'row',
       alignItems: 'flex-end',
       padding: Spacing.md,
-      paddingBottom: 40,
+      paddingBottom: Spacing.md,
       gap: Spacing.sm,
       backgroundColor: colors.background,
       borderTopWidth: 1,
@@ -179,6 +187,54 @@ function createStyles(colors: typeof Colors.light) {
       textAlign: 'center',
       marginTop: Spacing.md,
     },
+    itineraryDay: {
+      marginBottom: Spacing.xl,
+    },
+    itineraryDayTitle: {
+      fontFamily: 'Fraunces_600SemiBold',
+      fontSize: 18,
+      color: colors.text,
+      marginBottom: Spacing.sm,
+      paddingBottom: Spacing.xs,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.borderLight,
+    },
+    itineraryDayDate: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: colors.textSecondary,
+      marginBottom: Spacing.md,
+    },
+    itineraryActivity: {
+      flexDirection: 'row',
+      marginBottom: Spacing.md,
+      gap: Spacing.md,
+    },
+    itineraryActivityTime: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 13,
+      color: colors.tint,
+      minWidth: 56,
+    },
+    itineraryActivityContent: { flex: 1 },
+    itineraryActivityTitle: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 15,
+      color: colors.text,
+    },
+    itineraryActivityDesc: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 14,
+      color: colors.textSecondary,
+      marginTop: 2,
+      lineHeight: 20,
+    },
+    itineraryActivityLocation: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: colors.textTertiary,
+      marginTop: 2,
+    },
   });
 }
 
@@ -192,6 +248,7 @@ export default function TripDetailScreen() {
 
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
   const [message, setMessage] = useState('');
+  const messagesScrollRef = useRef<ScrollView>(null);
   const [messages, setMessages] = useState([
     { id: '1', content: "Hey! Let's figure out where we're staying.", isAI: false, name: 'You' },
     {
@@ -222,6 +279,8 @@ export default function TripDetailScreen() {
     );
   }
 
+  const insets = useSafeAreaInsets();
+
   const handleSendMessage = () => {
     if (!message.trim()) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -230,11 +289,12 @@ export default function TripDetailScreen() {
       { id: Date.now().toString(), content: message.trim(), isAI: false, name: 'You' },
     ]);
     setMessage('');
+    setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
   };
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: 10 + insets.top }]}>
         <LinearGradient
           colors={['#E8A68A', '#C45C3E']}
           start={{ x: 0, y: 0 }}
@@ -255,44 +315,57 @@ export default function TripDetailScreen() {
           </Text>
           <Text style={styles.tripDestinationOnGradient}>{trip.destination}</Text>
         </View>
+        <Pressable
+          style={styles.settingsBtn}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.push(`/trip/${id}/settings`);
+          }}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          accessibilityRole="button"
+          accessibilityLabel="Trip settings">
+          <IconSymbol name="gearshape" size={22} color="#FFFFFF" />
+        </Pressable>
       </View>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.tabScroll}
-        contentContainerStyle={styles.tabScrollContent}>
-        {TABS.map((tab) => (
-          <Pressable
-            key={tab}
-            style={[
-              styles.tab,
-              activeTab === tab && styles.tabActive,
-            ]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setActiveTab(tab);
-            }}>
-            <Text
+      <View style={styles.tabScroll}>
+        <View style={styles.tabScrollContent}>
+          {TABS.map((tab) => (
+            <Pressable
+              key={tab}
               style={[
-                styles.tabText,
-                activeTab === tab && styles.tabTextActive,
-              ]}>
-              {tab}
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+                styles.tab,
+                activeTab === tab && styles.tabActive,
+              ]}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setActiveTab(tab);
+              }}>
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === tab && styles.tabTextActive,
+                ]}
+                numberOfLines={1}>
+                {tab}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
 
       {activeTab === 'Chat' && (
         <KeyboardAvoidingView
           style={styles.chatContainer}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={100}>
+          keyboardVerticalOffset={0}>
           <ScrollView
+            ref={messagesScrollRef}
             style={styles.messagesScroll}
             contentContainerStyle={styles.messagesContent}
-            showsVerticalScrollIndicator={false}>
+            showsVerticalScrollIndicator={false}
+            keyboardDismissMode="on-drag"
+          >
             {messages.map((msg, i) => (
               <Animated.View
                 key={msg.id}
@@ -351,13 +424,43 @@ export default function TripDetailScreen() {
           style={styles.tabContent}
           contentContainerStyle={styles.tabContentInner}
           showsVerticalScrollIndicator={false}>
-          <Animated.View entering={FadeInDown.springify()}>
-            <Text style={styles.placeholderTitle}>Itinerary</Text>
-            <Text style={styles.placeholderText}>
-              Your AI-generated itinerary will appear here. Keep chatting in the
-              Chat tab to build your plan!
-            </Text>
-          </Animated.View>
+          {trip.itinerary && trip.itinerary.length > 0 ? (
+            <Animated.View entering={FadeInDown.springify()}>
+              <Text style={styles.placeholderTitle}>Itinerary</Text>
+              {trip.itinerary.map((day: ItineraryDay, dayIndex: number) => (
+                <View key={day.id} style={styles.itineraryDay}>
+                  <Text style={styles.itineraryDayTitle}>{day.title}</Text>
+                  {day.date != null && day.date !== '' && (
+                    <Text style={styles.itineraryDayDate}>{day.date}</Text>
+                  )}
+                  {day.activities.map((activity) => (
+                    <View key={activity.id} style={styles.itineraryActivity}>
+                      {activity.time != null && activity.time !== '' && (
+                        <Text style={styles.itineraryActivityTime}>{activity.time}</Text>
+                      )}
+                      <View style={styles.itineraryActivityContent}>
+                        <Text style={styles.itineraryActivityTitle}>{activity.title}</Text>
+                        {activity.description != null && activity.description !== '' && (
+                          <Text style={styles.itineraryActivityDesc}>{activity.description}</Text>
+                        )}
+                        {activity.location != null && activity.location !== '' && (
+                          <Text style={styles.itineraryActivityLocation}>{activity.location}</Text>
+                        )}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ))}
+            </Animated.View>
+          ) : (
+            <Animated.View entering={FadeInDown.springify()}>
+              <Text style={styles.placeholderTitle}>Itinerary</Text>
+              <Text style={styles.placeholderText}>
+                Your AI-generated itinerary will appear here. Keep chatting in the
+                Chat tab to build your plan!
+              </Text>
+            </Animated.View>
+          )}
         </ScrollView>
       )}
 
