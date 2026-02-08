@@ -2,7 +2,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
-import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -22,10 +21,10 @@ import {
   Linking,
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import PagerView from 'react-native-pager-view';
 import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import ImageViewerOverlay from '@/components/image-viewer-overlay';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { MarkdownText } from '@/components/markdown-text';
 import { Colors, Spacing, Radius } from '@/constants/theme';
@@ -541,72 +540,6 @@ const FALLBACK_MESSAGES: ChatMessage[] = [
   },
 ];
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-
-function ImageViewerOverlay({
-  imageUris,
-  initialPage,
-  onClose,
-}: {
-  imageUris: string[];
-  initialPage: number;
-  onClose: () => void;
-}) {
-  if (imageUris.length === 0) return null;
-
-  return (
-    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.92)' }]}>
-      <PagerView style={{ flex: 1 }} initialPage={initialPage}>
-        {imageUris.map((uri, index) => (
-          <View key={`${uri}-${index}`} style={styles.pagerPage} collapsable={false}>
-            <Pressable 
-              style={styles.pagerPageInner}
-              onPress={onClose}
-              accessibilityRole="button"
-              accessibilityLabel="Close image viewer">
-              <Image
-                source={{ uri }}
-                style={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}
-                contentFit="contain"
-              />
-            </Pressable>
-          </View>
-        ))}
-      </PagerView>
-      {/* Close button in top-right corner */}
-      <View style={{ position: 'absolute', top: 50, right: 20, zIndex: 10 }}>
-        <Pressable
-          onPress={onClose}
-          style={({ pressed }) => ({
-            backgroundColor: pressed ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.2)',
-            width: 40,
-            height: 40,
-            borderRadius: 20,
-            justifyContent: 'center',
-            alignItems: 'center',
-          })}
-          accessibilityRole="button"
-          accessibilityLabel="Close image viewer">
-          <IconSymbol name="xmark" size={20} color="#FFFFFF" />
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  pagerPage: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  pagerPageInner: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-});
-
 export default function TripDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -629,7 +562,7 @@ export default function TripDetailScreen() {
   const [geminiTyping, setGeminiTyping] = useState(false);
   const [geminiTypingStatus, setGeminiTypingStatus] = useState('');
   const [usersTyping, setUsersTyping] = useState<Set<string>>(new Set());
-  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesScrollRef = useRef<ScrollView>(null);
   const dotAnims = useRef([new RNAnimated.Value(0.3), new RNAnimated.Value(0.3), new RNAnimated.Value(0.3)]).current;
   const [messages, setMessages] = useState<ChatMessage[]>(
@@ -637,8 +570,89 @@ export default function TripDetailScreen() {
   );
   const [addedSuggestionKeys, setAddedSuggestionKeys] = useState<Set<string>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const tripIdForUploadRef = useRef<string | null>(null);
+  tripIdForUploadRef.current = id ?? null;
 
   const flashOpacity = useSharedValue(0);
+
+  // Web: hidden file input for adding photos (expo-image-picker is native-only)
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,video/*';
+    input.multiple = true;
+    input.style.display = 'none';
+    input.onchange = async (e: Event) => {
+      const target = e.target as HTMLInputElement;
+      const files = target.files;
+      target.value = '';
+      if (!files?.length) return;
+      const tripId = tripIdForUploadRef.current;
+      if (!tripId) return;
+      const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+      if (base) {
+        try {
+          const formData = new FormData();
+          for (let i = 0; i < files.length; i++) {
+            formData.append('files', files[i], files[i].name);
+          }
+          const res = await fetch(`${base}/trips/${encodeURIComponent(tripId)}/media/upload`, {
+            method: 'POST',
+            body: formData,
+          });
+          if (res.ok) {
+            const added = (await res.json()) as { uri: string; type: string }[];
+            setAlbumMediaByTripId((prev) => ({
+              ...prev,
+              [tripId]: [
+                ...(prev[tripId] ?? []),
+                ...added.map((m) => ({
+                  uri: `${base}${m.uri}`,
+                  type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+                })),
+              ],
+            }));
+          } else {
+            const newItems = Array.from(files).map((file) => ({
+              uri: URL.createObjectURL(file),
+              type: (file.type.startsWith('video/') ? 'video' : 'image') as 'image' | 'video',
+            }));
+            setAlbumMediaByTripId((prev) => ({
+              ...prev,
+              [tripId]: [...(prev[tripId] ?? []), ...newItems],
+            }));
+          }
+        } catch (err) {
+          console.error('Upload failed:', err);
+          const newItems = Array.from(files).map((file) => ({
+            uri: URL.createObjectURL(file),
+            type: (file.type.startsWith('video/') ? 'video' : 'image') as 'image' | 'video',
+          }));
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [tripId]: [...(prev[tripId] ?? []), ...newItems],
+          }));
+        }
+      } else {
+        const newItems = Array.from(files).map((file) => ({
+          uri: URL.createObjectURL(file),
+          type: (file.type.startsWith('video/') ? 'video' : 'image') as 'image' | 'video',
+        }));
+        setAlbumMediaByTripId((prev) => ({
+          ...prev,
+          [tripId]: [...(prev[tripId] ?? []), ...newItems],
+        }));
+      }
+    };
+    document.body.appendChild(input);
+    fileInputRef.current = input;
+    return () => {
+      document.body.removeChild(input);
+      fileInputRef.current = null;
+    };
+  }, []);
 
   const userDisplayName = user ? `${user.firstName} ${user.lastName}`.trim() || 'You' : 'You';
 
@@ -1091,6 +1105,11 @@ export default function TripDetailScreen() {
   const handleAddPictures = async () => {
     if (!id) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (Platform.OS === 'web') {
+      fileInputRef.current?.click();
+      return;
+    }
+    const ImagePicker = require('expo-image-picker');
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') return;
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -1099,18 +1118,17 @@ export default function TripDetailScreen() {
       quality: 0.8,
     });
     if (result.canceled) return;
-    
+
     const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
     if (base) {
       try {
-        // Upload actual files to backend
         const formData = new FormData();
         for (const asset of result.assets) {
           const uri = asset.uri;
           const filename = uri.split('/').pop() || 'image.jpg';
           const match = /\.(\w+)$/.exec(filename);
           const type = match ? `image/${match[1]}` : 'image/jpeg';
-          
+
           // @ts-ignore - FormData in React Native accepts uri
           formData.append('files', {
             uri,
@@ -1118,7 +1136,7 @@ export default function TripDetailScreen() {
             type,
           });
         }
-        
+
         const res = await fetch(`${base}/trips/${encodeURIComponent(id)}/media/upload`, {
           method: 'POST',
           body: formData,
@@ -1126,22 +1144,20 @@ export default function TripDetailScreen() {
             'Content-Type': 'multipart/form-data',
           },
         });
-        
+
         if (res.ok) {
           const added = (await res.json()) as { uri: string; type: string }[];
-          // URIs are now backend URLs like /uploads/filename.jpg
           setAlbumMediaByTripId((prev) => ({
             ...prev,
             [id]: [
               ...(prev[id] ?? []),
               ...added.map((m) => ({
-                uri: `${base}${m.uri}`, // Full URL for display
+                uri: `${base}${m.uri}`,
                 type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
               })),
             ],
           }));
         } else {
-          // Fallback: store device URIs locally
           const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
             uri: a.uri,
             type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
@@ -1153,7 +1169,6 @@ export default function TripDetailScreen() {
         }
       } catch (err) {
         console.error('Upload failed:', err);
-        // Fallback: store device URIs locally
         const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
           uri: a.uri,
           type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
@@ -1164,7 +1179,6 @@ export default function TripDetailScreen() {
         }));
       }
     } else {
-      // No backend: store device URIs locally
       const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
         uri: a.uri,
         type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
