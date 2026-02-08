@@ -1,8 +1,28 @@
-# Welcome to your Expo app 👋
+# Going Places
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+**Get your trips out of group chats and into the real world.**
 
-## Get started
+A hackathon project that transforms chaotic group chat trip planning into organized, actionable travel plans. Share a link, chat with friends, let AI help coordinate, and make it happen.
+
+## Features
+
+- **Zero-friction onboarding** - Just enter your name, no passwords or OAuth
+- **Real-time group chat** - Powered by Convex for instant sync
+- **AI trip assistant** - Gemini AI helps coordinate plans naturally in chat
+- **Smart trip planning** - Itineraries, dates, destinations, cost splitting
+- **Google Maps integration** - Route planning, directions, and POI markers
+- **Receipt tracking** - Split costs fairly among group members
+- **Shared photo albums** - Collect memories from your trip
+
+## Tech Stack
+
+- **Frontend**: React Native + Expo
+- **Backend**: Convex (serverless, real-time)
+- **AI**: Google Gemini API
+- **Maps**: Google Maps (react-native-maps)
+- **Platform**: iOS-first design
+
+## Quick Start
 
 1. Install dependencies
 
@@ -10,60 +30,139 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npm install
    ```
 
-2. Start the app
+2. Set up environment variables (create `.env.local`):
 
    ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Running on a physical device (Expo Go)
-
-If the app works on your Mac but **not on your iPhone** when both are on the same network:
-
-1. **Connect your phone (choose one):**
-   - **LAN (recommended if tunnel fails):** Use the same Wi‑Fi on phone and computer. Run `npm run start` (or `npx expo start`), then scan the QR code that shows `exp://192.168.x.x:8081`. If the phone can’t connect, allow the Metro port: `sudo ufw allow 8081/tcp` (Linux) or allow Node in your firewall.
-   - **Tunnel:** Run `npx expo start --tunnel`. If you see **"ngrok tunnel took too long to connect"**, use LAN above or retry later; the tunnel can time out due to network or ngrok. Ensure `@expo/ngrok` is installed (`npm install`) and you can sign in with an [Expo account](https://expo.dev).
-
-2. **Point the app at your machine’s IP for the chat backend.**  
-   Copy `.env.example` to `.env` (or `.env.local`) and set your PC’s LAN IP (not `localhost`):
-   ```bash
+   EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=your_key_here
+   EXPO_PUBLIC_GEMINI_API_KEY=your_key_here
+   EXPO_PUBLIC_CONVEX_URL=your_convex_url_here
    EXPO_PUBLIC_CHAT_WS_BASE=http://YOUR_PC_IP:8000
    ```
-   Example: if your PC is `192.168.1.10`, use `http://192.168.1.10:8000`.  
-   Find your IP: `ip addr` (Linux) or `ipconfig` (Windows).  
-   The Python backend must be running on that machine (`cd backend && uvicorn main:app --host 0.0.0.0 --port 8000`).
 
-3. Use the QR code that shows your LAN URL (`exp://192.168.x.x:8081`), not the localhost one, when opening in Expo Go.
+3. Start Convex backend (in separate terminal):
 
-## Get a fresh project
+   ```bash
+   npx convex dev
+   ```
 
-When you're ready, run:
+4. Start Expo dev server:
+
+   ```bash
+   npm start
+   ```
+
+5. Start Python backend (in separate terminal):
+
+   ```bash
+   cd backend
+   uvicorn main:app --host 0.0.0.0 --port 8000
+   ```
+
+In the output, you'll find options to open the app in:
+
+- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
+- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
+- [Expo Go](https://expo.dev/go)
+
+## Running on Physical Device
+
+### Option 1: LAN Connection (Recommended)
+
+1. **Connect phone and computer to same Wi-Fi**
+
+2. **Configure backend IP**:
+   - Find your PC's IP: `ip addr` (Linux) or `ipconfig` (Windows)
+   - Update `.env.local` with your machine's IP (not `localhost`):
+     ```bash
+     EXPO_PUBLIC_CHAT_WS_BASE=http://192.168.1.10:8000
+     ```
+
+3. **Allow firewall access** (if needed):
+   ```bash
+   sudo ufw allow 8081/tcp  # Expo Metro
+   sudo ufw allow 8000/tcp  # Python backend
+   ```
+
+4. **Start app**:
+   ```bash
+   npm run start
+   ```
+
+5. **Scan QR code** with Expo Go using the LAN URL (`exp://192.168.x.x:8081`)
+
+### Option 2: Tunnel Mode
+
+If LAN doesn't work:
 
 ```bash
-npm run reset-project
+npx expo start --tunnel
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Note: Requires `@expo/ngrok` (already in devDependencies) and may timeout due to network conditions.
 
-## Learn more
+## Project Structure
 
-To learn more about developing your project with Expo, look at the following resources:
+```
+app/
+├── (tabs)/              # Bottom tab navigation
+│   ├── index.tsx        # Home screen
+│   ├── trips.tsx        # Trips list
+│   ├── create.tsx       # Create trip modal
+│   └── profile.tsx      # User profile
+├── trip/[id]/           # Dynamic trip routes
+│   ├── index.tsx        # Trip detail (chat/plan/costs/map/album)
+│   └── settings.tsx     # Trip settings
+├── join/[tripId].tsx    # Join trip via invite link
+└── onboarding.tsx       # Name input screen
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+backend/
+├── main.py              # FastAPI server
+└── ...                  # Python backend logic
 
-## Join the community
+components/
+├── chat/                # Chat UI components
+├── maps/                # Map components
+└── ...                  # Shared components
 
-Join our community of developers creating universal apps.
+convex/
+├── schema.ts            # Database schema
+├── users.ts             # User queries/mutations
+├── trips.ts             # Trip queries/mutations
+└── messages.ts          # Chat queries/mutations
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## API Keys Setup
+
+### Google Maps API
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable "Maps SDK for iOS" and "Directions API"
+3. Create API key and add to `.env.local`
+
+### Gemini API
+1. Get key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. Add to `.env.local` as `EXPO_PUBLIC_GEMINI_API_KEY`
+
+### Convex
+1. Run `npx convex dev` to initialize
+2. Will auto-generate `CONVEX_DEPLOYMENT` in `.env.local`
+
+## Development
+
+- This project uses [Expo Router](https://docs.expo.dev/router/introduction/) for file-based routing
+- Real-time sync powered by [Convex](https://docs.convex.dev/)
+- iOS-first design with native feel (animations, haptics, polish)
+
+## Important Notes
+
+- This is a **hackathon project** - focus is on polish and demo, not production readiness
+- **Never commit** `.env.local` or API keys to git
+- Prioritize looks over functionality
+- Target a 3-4 minute demo with a single happy path
+
+## Resources
+
+- [Expo Documentation](https://docs.expo.dev/)
+- [Convex Documentation](https://docs.convex.dev/)
+- [React Native Maps](https://github.com/react-native-maps/react-native-maps)
+- [Google Gemini API](https://ai.google.dev/gemini-api/docs)
+- [INSTRUCTION.md](./INSTRUCTION.md) - Full project spec and build instructions
