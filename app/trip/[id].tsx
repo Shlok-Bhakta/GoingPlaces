@@ -23,7 +23,31 @@ import { useUser } from '@/contexts/user-context';
 
 const CHAT_WS_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
 
-type ChatMessage = { id: string; content: string; isAI: boolean; name: string };
+type ChatMessage = { id: string; content: string; isAI: boolean; name: string; user_id?: string; timestamp?: string };
+
+const GROUP_GAP_MS = 5 * 60 * 1000; // 5 min
+const DIVIDER_GAP_MS = 30 * 60 * 1000; // 30 min
+
+function formatDividerLabel(iso: string, prevIso?: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (isToday) {
+    if (prevIso) {
+      const prev = new Date(prevIso);
+      if (prev.toDateString() === d.toDateString()) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+    return 'Today';
+  }
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function sameSender(a: ChatMessage, b: ChatMessage): boolean {
+  return a.user_id ? a.user_id === b.user_id : a.name === b.name && a.isAI === b.isAI;
+}
 
 const TABS = ['Chat', 'Plan', 'Costs', 'Map', 'Album'] as const;
 
@@ -98,16 +122,34 @@ function createStyles(colors: typeof Colors.light) {
     messagesScroll: { flex: 1 },
     messagesContent: { padding: Spacing.lg, paddingBottom: Spacing.xl },
     messageRow: { marginBottom: Spacing.md },
+    messageRowTight: { marginBottom: Spacing.xs },
     messageRowUser: { alignItems: 'flex-end' },
     messageRowAI: { alignItems: 'flex-start' },
-    messageBubble: { maxWidth: '85%', padding: Spacing.md, borderRadius: Radius.lg },
+    messageBubbleWrapper: { maxWidth: '85%' },
+    messageBubbleWrapperAI: { alignItems: 'flex-start' },
+    messageBubbleWrapperUser: { alignItems: 'flex-end' },
+    messageBubble: { padding: Spacing.md, borderRadius: Radius.lg },
     bubbleUser: { backgroundColor: colors.tint, borderBottomRightRadius: 4 },
-    bubbleAI: { backgroundColor: colors.surfaceMuted, borderBottomLeftRadius: 4 },
+    bubbleAI: { backgroundColor: '#D1D1D6', borderBottomLeftRadius: 4 },
     messageName: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 12,
-      color: colors.tint,
+      color: colors.textSecondary,
       marginBottom: 4,
+    },
+    messageNameLeft: { textAlign: 'left' },
+    messageNameRight: { textAlign: 'right' },
+    timeDivider: {
+      alignItems: 'center',
+      paddingVertical: Spacing.md,
+      marginVertical: Spacing.sm,
+    },
+    timeDividerText: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 12,
+      color: colors.textTertiary,
+      backgroundColor: colors.background,
+      paddingHorizontal: Spacing.sm,
     },
     messageText: { fontFamily: 'DMSans_400Regular', fontSize: 15 },
     messageTextUser: { color: '#FFFFFF' },
@@ -244,12 +286,21 @@ function createStyles(colors: typeof Colors.light) {
 }
 
 const FALLBACK_MESSAGES: ChatMessage[] = [
-  { id: '1', content: "Hey! Let's figure out where we're staying.", isAI: false, name: 'You' },
+  {
+    id: '1',
+    content: "Hey! Let's figure out where we're staying.",
+    isAI: false,
+    name: 'You',
+    user_id: '',
+    timestamp: new Date(Date.now() - 60000).toISOString(),
+  },
   {
     id: '2',
     content: "I can help with that! Based on your dates and destination, I'd recommend looking at areas near downtown. What's your budget per night?",
     isAI: true,
     name: 'AI Assistant',
+    user_id: '',
+    timestamp: new Date().toISOString(),
   },
 ];
 
@@ -284,18 +335,20 @@ export default function TripDetailScreen() {
         const data = JSON.parse(event.data as string);
         if (data.type === 'history' && Array.isArray(data.messages)) {
           setMessages(
-            data.messages.map((m: { id: string; content: string; is_ai: boolean; user_name: string }) => ({
+            data.messages.map((m: { id: string; content: string; is_ai: boolean; user_name: string; user_id?: string; created_at?: string }) => ({
               id: String(m.id),
               content: m.content,
               isAI: m.is_ai,
               name: m.user_name || 'Unknown',
+              user_id: m.user_id ?? '',
+              timestamp: m.created_at || new Date().toISOString(),
             }))
           );
         } else if (data.type === 'message' && data.message) {
           const m = data.message;
           setMessages((prev) => [
             ...prev,
-            { id: String(m.id), content: m.content, isAI: m.is_ai, name: m.user_name || 'Unknown' },
+            { id: String(m.id), content: m.content, isAI: m.is_ai, name: m.user_name || 'Unknown', user_id: m.user_id ?? '', timestamp: m.created_at || new Date().toISOString() },
           ]);
           setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
         }
@@ -342,7 +395,7 @@ export default function TripDetailScreen() {
     } else {
       setMessages((prev) => [
         ...prev,
-        { id: Date.now().toString(), content: text, isAI: false, name: 'You' },
+        { id: Date.now().toString(), content: text, isAI: false, name: userDisplayName, user_id: user?.id ?? '', timestamp: new Date().toISOString() },
       ]);
       setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
     }
@@ -422,32 +475,80 @@ export default function TripDetailScreen() {
             showsVerticalScrollIndicator={false}
             keyboardDismissMode="on-drag"
           >
-            {messages.map((msg, i) => (
-              <Animated.View
-                key={msg.id}
-                entering={FadeInDown.delay(i * 30).springify()}
-                style={[
-                  styles.messageRow,
-                  msg.isAI ? styles.messageRowAI : styles.messageRowUser,
-                ]}>
-                <View
-                  style={[
-                    styles.messageBubble,
-                    msg.isAI ? styles.bubbleAI : styles.bubbleUser,
-                  ]}>
-                  {msg.isAI && (
-                    <Text style={styles.messageName}>{msg.name}</Text>
-                  )}
-                  <Text
+            {(() => {
+              const currentUserId = user?.id ?? '';
+              const isFromMe = (m: ChatMessage) =>
+                (m.user_id && currentUserId && m.user_id === currentUserId) || (!CHAT_WS_BASE && !m.isAI);
+
+              const items: { type: 'divider'; key: string; label: string } | { type: 'msg'; msg: ChatMessage; showName: boolean; groupedWithNext: boolean }[] = [];
+              for (let i = 0; i < messages.length; i++) {
+                const msg = messages[i];
+                const prev = messages[i - 1];
+                const next = messages[i + 1];
+                const ts = msg.timestamp ? new Date(msg.timestamp).getTime() : 0;
+                const prevTs = prev?.timestamp ? new Date(prev.timestamp).getTime() : 0;
+                const nextTs = next?.timestamp ? new Date(next.timestamp).getTime() : Infinity;
+
+                if (i === 0 || ts - prevTs > DIVIDER_GAP_MS) {
+                  items.push({ type: 'divider', key: `div-${msg.id}`, label: formatDividerLabel(msg.timestamp ?? '', prev?.timestamp) });
+                }
+                const groupedWithNext =
+                  !!next && sameSender(msg, next) && nextTs - ts <= GROUP_GAP_MS;
+                const showName = !prev || !sameSender(msg, prev) || ts - prevTs > GROUP_GAP_MS;
+                items.push({ type: 'msg', msg, showName, groupedWithNext });
+              }
+
+              return items.map((item, idx) => {
+                if (item.type === 'divider') {
+                  return (
+                    <View key={item.key} style={styles.timeDivider}>
+                      <Text style={styles.timeDividerText}>{item.label}</Text>
+                    </View>
+                  );
+                }
+                const { msg, showName, groupedWithNext } = item;
+                const fromMe = isFromMe(msg);
+                return (
+                  <Animated.View
+                    key={msg.id}
+                    entering={FadeInDown.delay(idx * 20).springify()}
                     style={[
-                      styles.messageText,
-                      msg.isAI ? styles.messageTextAI : styles.messageTextUser,
+                      styles.messageRow,
+                      fromMe ? styles.messageRowUser : styles.messageRowAI,
+                      groupedWithNext && styles.messageRowTight,
                     ]}>
-                    {msg.content}
-                  </Text>
-                </View>
-              </Animated.View>
-            ))}
+                    <View
+                      style={[
+                        styles.messageBubbleWrapper,
+                        fromMe ? styles.messageBubbleWrapperUser : styles.messageBubbleWrapperAI,
+                      ]}>
+                      {showName && (
+                        <Text
+                          style={[
+                            styles.messageName,
+                            fromMe ? styles.messageNameRight : styles.messageNameLeft,
+                          ]}>
+                          {msg.name}
+                        </Text>
+                      )}
+                      <View
+                        style={[
+                          styles.messageBubble,
+                          fromMe ? styles.bubbleUser : styles.bubbleAI,
+                        ]}>
+                        <Text
+                          style={[
+                            styles.messageText,
+                            fromMe ? styles.messageTextUser : styles.messageTextAI,
+                          ]}>
+                          {msg.content}
+                        </Text>
+                      </View>
+                    </View>
+                  </Animated.View>
+                );
+              });
+            })()}
           </ScrollView>
           <View style={styles.inputRow}>
             <TextInput
@@ -458,6 +559,12 @@ export default function TripDetailScreen() {
               onChangeText={setMessage}
               multiline
               maxLength={500}
+              onKeyPress={(e) => {
+                if (e.nativeEvent.key === 'Enter' && !e.nativeEvent.shiftKey) {
+                  e.preventDefault();
+                  handleSendMessage();
+                }
+              }}
             />
             <Pressable
               style={({ pressed }) => [

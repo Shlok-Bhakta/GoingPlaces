@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Text,
   StyleSheet,
@@ -30,12 +30,20 @@ export default function TripsScreen() {
   const [joinModalVisible, setJoinModalVisible] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [joinLoading, setJoinLoading] = useState(false);
+  const joinCodeInputRef = useRef<TextInput>(null);
 
   const handleOpenJoinModal = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setJoinCode('');
     setJoinModalVisible(true);
   };
+
+  useEffect(() => {
+    if (joinModalVisible) {
+      const t = setTimeout(() => joinCodeInputRef.current?.focus(), 100);
+      return () => clearTimeout(t);
+    }
+  }, [joinModalVisible]);
 
   const finishJoin = (tripId: string) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -46,6 +54,7 @@ export default function TripsScreen() {
   };
 
   const handleJoinTrip = async () => {
+    if (joinLoading) return;
     const codeTrimmed = joinCode.trim();
     if (codeTrimmed.length !== 4 || !/^\d{4}$/.test(codeTrimmed)) {
       Alert.alert('Enter code', 'Enter the 4-digit code.');
@@ -158,6 +167,7 @@ export default function TripsScreen() {
                 Enter the 4-digit code
               </Text>
               <TextInput
+                ref={joinCodeInputRef}
                 style={[
                   styles.modalCodeInput,
                   {
@@ -172,6 +182,12 @@ export default function TripsScreen() {
                 onChangeText={(t) => setJoinCode(t.replace(/\D/g, '').slice(0, 4))}
                 keyboardType="number-pad"
                 maxLength={4}
+                autoFocus
+                returnKeyType="done"
+                onSubmitEditing={handleJoinTrip}
+                onKeyPress={(e) => {
+                  if (e.nativeEvent.key === 'Enter') handleJoinTrip();
+                }}
               />
               <View style={styles.modalActions}>
                 <Pressable
