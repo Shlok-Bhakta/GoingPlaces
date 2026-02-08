@@ -53,7 +53,10 @@ from google_places import (
     get_place_details as gp_get_place_details,
     get_distance_matrix as gp_get_distance_matrix,
 )
-from amadeus import search_flights as amadeus_search_flights, search_hotels as amadeus_search_hotels
+from amadeus import (
+    search_flights as amadeus_search_flights,
+    search_hotels as amadeus_search_hotels,
+)
 
 # Load .env.local from project root so EXPO_PUBLIC_OPENROUTER_API_KEY is available
 _load_env_paths = [
@@ -145,7 +148,9 @@ def startup() -> None:
         logger.warning(
             "Google Maps: no API key (set EXPO_PUBLIC_GOOGLE_MAPS_API_KEY in .env.local for realistic itinerary tools)"
         )
-    amadeus_key = os.environ.get("EXPO_PUBLIC_AMADEUS_API_KEY") or os.environ.get("AMADEUS_API_KEY")
+    amadeus_key = os.environ.get("EXPO_PUBLIC_AMADEUS_API_KEY") or os.environ.get(
+        "AMADEUS_API_KEY"
+    )
     if amadeus_key:
         logger.info("Amadeus: API key loaded for hotel/flight search (LLM tools)")
     else:
@@ -410,6 +415,14 @@ def api_distance_matrix(body: DistanceMatrixBody) -> dict[str, Any]:
     return gp_get_distance_matrix(
         origins=body.origins, destinations=body.destinations, mode=body.mode
     )
+
+
+@app.get("/places/geocode")
+def api_geocode(address: str = Query(..., min_length=1)) -> dict[str, Any]:
+    """Convert an address or place name to latitude/longitude coordinates."""
+    from google_places import geocode_address as gp_geocode_address
+
+    return gp_geocode_address(address)
 
 
 # --- Amadeus hotel and flight search ---

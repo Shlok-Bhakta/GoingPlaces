@@ -20,6 +20,8 @@ import {
   View
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import MapView, { Marker, Polyline } from 'react-native-maps';
+import WebView from 'react-native-webview';
 import Animated, { FadeInDown, useAnimatedStyle, useSharedValue, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -614,6 +616,9 @@ export default function TripDetailScreen() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const tripIdForUploadRef = useRef<string | null>(null);
   tripIdForUploadRef.current = id ?? null;
+  const [mapCoordinates, setMapCoordinates] = useState<{ location: string; lat: number; lng: number }[]>([]);
+  const [loadingCoordinates, setLoadingCoordinates] = useState(false);
+  const mapRef = useRef<MapView>(null);
 
   const flashOpacity = useSharedValue(0);
 
@@ -1042,6 +1047,76 @@ export default function TripDetailScreen() {
       wsRef.current = null;
     };
   }, [id, CHAT_WS_BASE, user?.id, userDisplayName]);
+
+  // Geocode locations for the map
+  useEffect(() => {
+    if (!trip?.itinerary) {
+      console.log('[Map] No itinerary found');
+      return;
+    }
+    
+    const locations: string[] = [];
+    trip.itinerary.forEach((day) => {
+      day.activities.forEach((activity) => {
+        if (activity.location) {
+          locations.push(activity.location);
+        }
+      });
+    });
+
+    console.log('[Map] Extracted locations:', locations);
+
+    if (locations.length === 0) {
+      setMapCoordinates([]);
+      return;
+    }
+
+    setLoadingCoordinates(true);
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+    console.log('[Map] Geocoding API base:', base);
+    
+    Promise.all(
+      locations.map(async (location) => {
+        try {
+          const url = `${base}/places/geocode?address=${encodeURIComponent(location)}`;
+          console.log('[Map] Fetching:', url);
+          const res = await fetch(url);
+          console.log('[Map] Response status for', location, ':', res.status);
+          if (res.ok) {
+            const data = await res.json();
+            console.log('[Map] Geocode result for', location, ':', data);
+            if (data.lat && data.lng) {
+              return { location, lat: data.lat, lng: data.lng };
+            }
+          } else {
+            console.error('[Map] Bad response:', res.status, await res.text());
+          }
+        } catch (e) {
+          console.error('[Map] Geocoding failed for', location, e);
+        }
+        return null;
+      })
+    ).then((results) => {
+      console.log('[Map] All geocoding results:', results);
+      const coords = results.filter((r): r is { location: string; lat: number; lng: number } => r !== null);
+      console.log('[Map] Valid coordinates:', coords);
+      setMapCoordinates(coords);
+      setLoadingCoordinates(false);
+      
+      // Fit map to show all markers
+      if (coords.length > 0 && mapRef.current) {
+        setTimeout(() => {
+          mapRef.current?.fitToCoordinates(
+            coords.map(c => ({ latitude: c.lat, longitude: c.lng })),
+            {
+              edgePadding: { top: 100, right: 50, bottom: 100, left: 50 },
+              animated: true,
+            }
+          );
+        }, 500);
+      }
+    });
+  }, [trip?.itinerary, CHAT_WS_BASE]);
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1750,18 +1825,216 @@ export default function TripDetailScreen() {
 
       {activeTab === 'Map' && (
         <View style={styles.mapContainer}>
-          <View style={styles.mapPlaceholder}>
-            <IconSymbol
-              name="map.fill"
-              size={48}
-              color={colors.textTertiary}
-            />
-            <Text style={styles.mapPlaceholderTitle}>Map</Text>
-            <Text style={styles.mapPlaceholderText}>
-              Run a development build for live maps:{'\n'}
-              npx expo run:ios
-            </Text>
-          </View>
+          {(() => {
+            // Extract all locations from the itinerary
+            const locations: string[] = [];
+            if (trip.itinerary) {
+              trip.itinerary.forEach((day) => {
+                day.activities.forEach((activity) => {
+                  if (activity.location) {
+                    locations.push(activity.location);
+                  }
+                });
+              });
+            }
+
+            if (locations.length === 0) {
+              return (
+                <View style={styles.mapPlaceholder}>
+                  <IconSymbol
+                    name="map.fill"
+                    size={48}
+                    color={colors.textTertiary}
+                  />
+                  <Text style={styles.mapPlaceholderTitle}>No locations yet</Text>
+                  <Text style={styles.mapPlaceholderText}>
+                    Add locations to your itinerary in the Chat or Plan tab to see them on the map
+                  </Text>
+                </View>
+              );
+            }
+
+            // For web: use iframe embed
+            if (Platform.OS === 'web') {
+              const origin = encodeURIComponent(locations[0]);
+              const destination = encodeURIComponent(locations[locations.length - 1]);
+              
+              let embedUrl: string;
+              if (locations.length === 1) {
+                // Single location: show the place
+                embedUrl = `https://www.google.com/maps?q=${origin}&output=embed`;
+              } else {
+                // Multiple locations: show directions with waypoints
+                const waypoints = locations.length > 2
+                  ? '&waypoints=' + locations.slice(1, -1).map(l => encodeURIComponent(l)).join('|')
+                  : '';
+                embedUrl = `https://www.google.com/maps/embed/v1/directions?key=AIzaSyBFw0Qbyq9zTFTd-tUY6dZWTgaQzuU17R8&origin=${origin}&destination=${destination}${waypoints}`;
+              }
+
+              return (
+                <View style={{ flex: 1, position: 'relative' }}>
+                  <iframe
+                    src={embedUrl}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      border: 0,
+                    }}
+                    allowFullScreen
+                    loading="lazy"
+                    referrerPolicy="no-referrer-when-downgrade"
+                  />
+                  <View
+                    style={{
+                      position: 'absolute',
+                      top: Spacing.md,
+                      right: Spacing.md,
+                      backgroundColor: colors.surface,
+                      borderRadius: Radius.lg,
+                      padding: Spacing.sm,
+                      shadowColor: '#000',
+                      shadowOffset: { width: 0, height: 2 },
+                      shadowOpacity: 0.25,
+                      shadowRadius: 4,
+                    }}>
+                    <Text style={{ fontFamily: 'DMSans_600SemiBold', fontSize: 12, color: colors.text }}>
+                      {locations.length} stop{locations.length !== 1 ? 's' : ''}
+                    </Text>
+                  </View>
+                </View>
+              );
+            }
+
+            // For native (iOS Expo Go): use react-native-maps with Apple Maps
+            if (loadingCoordinates) {
+              return (
+                <View style={[styles.mapPlaceholder, { backgroundColor: colors.surface }]}>
+                  <IconSymbol
+                    name="map.fill"
+                    size={48}
+                    color={colors.textTertiary}
+                  />
+                  <Text style={styles.mapPlaceholderTitle}>Loading map...</Text>
+                  <Text style={styles.mapPlaceholderText}>
+                    Geocoding {locations.length} location{locations.length !== 1 ? 's' : ''}
+                  </Text>
+                </View>
+              );
+            }
+
+            if (mapCoordinates.length === 0) {
+              return (
+                <View style={styles.mapPlaceholder}>
+                  <IconSymbol
+                    name="exclamationmark.triangle.fill"
+                    size={48}
+                    color={colors.textTertiary}
+                  />
+                  <Text style={styles.mapPlaceholderTitle}>Unable to load map</Text>
+                  <Text style={styles.mapPlaceholderText}>
+                    Could not geocode locations. Check your network connection.
+                  </Text>
+                </View>
+              );
+            }
+
+            return (
+              <View style={{ flex: 1, position: 'relative' }}>
+                <MapView
+                  ref={mapRef}
+                  style={{ flex: 1 }}
+                  initialRegion={{
+                    latitude: mapCoordinates[0].lat,
+                    longitude: mapCoordinates[0].lng,
+                    latitudeDelta: 0.1,
+                    longitudeDelta: 0.1,
+                  }}
+                  showsUserLocation
+                  showsMyLocationButton
+                >
+                  {mapCoordinates.map((coord, index) => (
+                    <Marker
+                      key={`${coord.location}-${index}`}
+                      coordinate={{ latitude: coord.lat, longitude: coord.lng }}
+                      title={`Stop ${index + 1}`}
+                      description={coord.location}
+                      pinColor={
+                        index === 0
+                          ? 'green'
+                          : index === mapCoordinates.length - 1
+                          ? 'red'
+                          : '#E8A68A'
+                      }
+                    />
+                  ))}
+                  {mapCoordinates.length > 1 && (
+                    <Polyline
+                      coordinates={mapCoordinates.map(c => ({
+                        latitude: c.lat,
+                        longitude: c.lng,
+                      }))}
+                      strokeColor="#E8A68A"
+                      strokeWidth={3}
+                    />
+                  )}
+                </MapView>
+                <View
+                  style={{
+                    position: 'absolute',
+                    bottom: Spacing.lg,
+                    left: Spacing.md,
+                    right: Spacing.md,
+                    backgroundColor: colors.surface,
+                    borderRadius: Radius.lg,
+                    padding: Spacing.md,
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: 2 },
+                    shadowOpacity: 0.25,
+                    shadowRadius: 4,
+                    elevation: 5,
+                  }}>
+                  <Text style={{ fontFamily: 'DMSans_600SemiBold', fontSize: 14, color: colors.text, marginBottom: 4 }}>
+                    {mapCoordinates.length} location{mapCoordinates.length !== 1 ? 's' : ''} in route
+                  </Text>
+                  <Pressable
+                    onPress={() => {
+                      // Build Google Maps URL using lat,lng coordinates for better accuracy
+                      if (mapCoordinates.length === 1) {
+                        // Single location: just navigate to it
+                        const coord = mapCoordinates[0];
+                        const url = `https://www.google.com/maps/search/?api=1&query=${coord.lat},${coord.lng}`;
+                        Linking.openURL(url);
+                      } else {
+                        // Multiple locations: use directions with waypoints
+                        const origin = mapCoordinates[0];
+                        const dest = mapCoordinates[mapCoordinates.length - 1];
+                        const waypoints = mapCoordinates
+                          .slice(1, -1)
+                          .map(c => `${c.lat},${c.lng}`)
+                          .join('|');
+                        
+                        const url = waypoints
+                          ? `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lng}&destination=${dest.lat},${dest.lng}&waypoints=${waypoints}`
+                          : `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lng}&destination=${dest.lat},${dest.lng}`;
+                        Linking.openURL(url);
+                      }
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }}
+                    style={({ pressed }) => ({
+                      backgroundColor: pressed ? colors.surfaceMuted : colors.tint,
+                      borderRadius: Radius.md,
+                      padding: Spacing.sm,
+                      marginTop: Spacing.sm,
+                      alignItems: 'center',
+                    })}>
+                    <Text style={{ fontFamily: 'DMSans_600SemiBold', fontSize: 14, color: '#FFFFFF' }}>
+                      Open in Google Maps App
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            );
+          })()}
         </View>
       )}
 

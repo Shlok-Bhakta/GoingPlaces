@@ -2,6 +2,7 @@
 Google Maps/Places API helpers for trip planning: search places, place details (hours), distance matrix.
 Uses legacy Places API and Distance Matrix API; key from EXPO_PUBLIC_GOOGLE_MAPS_API_KEY or GOOGLE_MAPS_API_KEY.
 """
+
 import logging
 import os
 from typing import Any
@@ -12,13 +13,18 @@ logger = logging.getLogger(__name__)
 
 BASE_PLACES = "https://maps.googleapis.com/maps/api/place"
 BASE_DISTANCE = "https://maps.googleapis.com/maps/api/distancematrix/json"
+BASE_GEOCODE = "https://maps.googleapis.com/maps/api/geocode/json"
 
 
 def _get_api_key() -> str | None:
-    return os.environ.get("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY") or os.environ.get("GOOGLE_MAPS_API_KEY")
+    return os.environ.get("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY") or os.environ.get(
+        "GOOGLE_MAPS_API_KEY"
+    )
 
 
-def search_places(query: str, location: str | None = None, max_results: int = 5) -> dict[str, Any]:
+def search_places(
+    query: str, location: str | None = None, max_results: int = 5
+) -> dict[str, Any]:
     """
     Text search for places (e.g. "coffee shop San Francisco", "Golden Gate Bridge").
     Returns list of places with place_id, name, formatted_address, and optionally location bias.
@@ -32,7 +38,9 @@ def search_places(query: str, location: str | None = None, max_results: int = 5)
     try:
         params: dict[str, str | int] = {"query": query, "key": key}
         if location:
-            params["location"] = location  # optional bias, e.g. "37.7749,-122.4194" or "San Francisco"
+            params["location"] = (
+                location  # optional bias, e.g. "37.7749,-122.4194" or "San Francisco"
+            )
         url = f"{BASE_PLACES}/textsearch/json"
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
@@ -41,14 +49,16 @@ def search_places(query: str, location: str | None = None, max_results: int = 5)
             return {"error": data.get("status", "UNKNOWN"), "results": []}
         results = []
         for i, p in enumerate((data.get("results") or [])[:max_results]):
-            results.append({
-                "place_id": p.get("place_id"),
-                "name": p.get("name"),
-                "formatted_address": p.get("formatted_address"),
-                "vicinity": p.get("vicinity"),
-                "rating": p.get("rating"),
-                "user_ratings_total": p.get("user_ratings_total"),
-            })
+            results.append(
+                {
+                    "place_id": p.get("place_id"),
+                    "name": p.get("name"),
+                    "formatted_address": p.get("formatted_address"),
+                    "vicinity": p.get("vicinity"),
+                    "rating": p.get("rating"),
+                    "user_ratings_total": p.get("user_ratings_total"),
+                }
+            )
         return {"results": results}
     except requests.RequestException as e:
         logger.exception("Places text search failed: %s", e)
@@ -141,19 +151,72 @@ def get_distance_matrix(
             row_data = []
             for el in row.get("elements") or []:
                 if el.get("status") != "OK":
-                    row_data.append({"status": el.get("status"), "distance": None, "duration": None})
+                    row_data.append(
+                        {"status": el.get("status"), "distance": None, "duration": None}
+                    )
                 else:
                     d = el.get("distance") or {}
                     dur = el.get("duration") or {}
-                    row_data.append({
-                        "distance": {"text": d.get("text"), "value_meters": d.get("value")},
-                        "duration": {"text": dur.get("text"), "value_seconds": dur.get("value")},
-                    })
+                    row_data.append(
+                        {
+                            "distance": {
+                                "text": d.get("text"),
+                                "value_meters": d.get("value"),
+                            },
+                            "duration": {
+                                "text": dur.get("text"),
+                                "value_seconds": dur.get("value"),
+                            },
+                        }
+                    )
             rows.append(row_data)
-        return {"rows": rows, "origin_addresses": data.get("origin_addresses", []), "destination_addresses": data.get("destination_addresses", [])}
+        return {
+            "rows": rows,
+            "origin_addresses": data.get("origin_addresses", []),
+            "destination_addresses": data.get("destination_addresses", []),
+        }
     except requests.RequestException as e:
         logger.exception("Distance matrix failed: %s", e)
         return {"error": str(e), "rows": []}
+    except Exception as e:
+        logger.exception("Distance matrix error: %s", e)
+        return {"error": str(e), "rows": []}
+
+
+def geocode_address(address: str) -> dict[str, Any]:
+    """
+    Convert an address or place name to latitude/longitude coordinates.
+    Returns lat, lng, and formatted_address.
+    """
+    key = _get_api_key()
+    if not key:
+        return {"error": "Google Maps API key not configured"}
+    address = (address or "").strip()
+    if not address:
+        return {"error": "address is required"}
+    try:
+        params = {"address": address, "key": key}
+        r = requests.get(BASE_GEOCODE, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("status") != "OK":
+            return {"error": data.get("status", "UNKNOWN")}
+        results = data.get("results") or []
+        if not results:
+            return {"error": "No results found"}
+        result = results[0]
+        location = result.get("geometry", {}).get("location", {})
+        return {
+            "lat": location.get("lat"),
+            "lng": location.get("lng"),
+            "formatted_address": result.get("formatted_address"),
+        }
+    except requests.RequestException as e:
+        logger.exception("Geocoding failed: %s", e)
+        return {"error": str(e)}
+    except Exception as e:
+        logger.exception("Geocoding error: %s", e)
+        return {"error": str(e)}
     except Exception as e:
         logger.exception("Distance matrix error: %s", e)
         return {"error": str(e), "rows": []}
