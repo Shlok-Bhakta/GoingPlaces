@@ -128,9 +128,6 @@ export default function CreateTripScreen() {
         )}
         <Text style={[styles.headerLabel, { color: colors.textSecondary }]}>New adventure</Text>
         <Text style={[styles.headerTitle, { color: colors.text }]}>Create trip</Text>
-        <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-          {step === 0 ? 'Give your trip a name — you can add details later' : 'Share the code so friends can join'}
-        </Text>
         <View style={styles.stepDots}>
           {STEPS.map((_, i) => (
             <View
