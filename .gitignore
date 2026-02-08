@@ -35,6 +35,10 @@ yarn-error.*
 .env
 .convex/
 
+# Python backend
+backend/venv/
+backend/chat.db
+
 # typescript
 *.tsbuildinfo
 

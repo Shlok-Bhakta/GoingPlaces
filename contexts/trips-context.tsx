@@ -41,6 +41,7 @@ export type Trip = {
 type TripsContextType = {
   trips: Trip[];
   addTrip: (trip: Omit<Trip, 'id' | 'createdAt'>) => string;
+  joinTrip: (tripId: string, options?: { name?: string; destination?: string }) => void;
   getTrip: (id: string) => Trip | undefined;
   updateTrip: (id: string, updates: Partial<Omit<Trip, 'id' | 'createdAt'>>) => void;
 };
@@ -69,6 +70,22 @@ export function TripsProvider({ children }: { children: React.ReactNode }) {
     [trips]
   );
 
+  const joinTrip = useCallback((tripId: string, options?: { name?: string; destination?: string }) => {
+    setTrips((prev) => {
+      if (prev.some((t) => t.id === tripId)) return prev;
+      const now = Date.now();
+      const newTrip: Trip = {
+        id: tripId,
+        name: options?.name ?? 'Joined Trip',
+        destination: options?.destination ?? 'TBD',
+        status: 'planning',
+        createdBy: 'unknown',
+        createdAt: now,
+      };
+      return [newTrip, ...prev];
+    });
+  }, []);
+
   const updateTrip = useCallback((id: string, updates: Partial<Omit<Trip, 'id' | 'createdAt'>>) => {
     setTrips((prev) =>
       prev.map((t) => (t.id === id ? { ...t, ...updates } : t))
@@ -76,7 +93,7 @@ export function TripsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <TripsContext.Provider value={{ trips, addTrip, getTrip, updateTrip }}>
+    <TripsContext.Provider value={{ trips, addTrip, joinTrip, getTrip, updateTrip }}>
       {children}
     </TripsContext.Provider>
   );

@@ -21,6 +21,7 @@ const MAPPING: Partial<Record<string, ComponentProps<typeof MaterialIcons>['name
   'xmark': 'close',
   'checkmark': 'check',
   'gearshape': 'settings',
+  'link': 'link',
 };
 
 /**

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   Pressable,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
@@ -21,22 +22,51 @@ import { useTheme } from '@/contexts/theme-context';
 
 const STEPS = ['Details', 'Invite'];
 
+const CHAT_API_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
+
 export default function CreateTripScreen() {
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
-  const [destination, setDestination] = useState('');
-  const [startCity, setStartCity] = useState('');
+  const [createdTripId, setCreatedTripId] = useState<string | null>(null);
+  const [joinCode, setJoinCode] = useState<string | null>(null);
+  const [joinCodeLoading, setJoinCodeLoading] = useState(false);
   const { user } = useUser();
   const { addTrip } = useTrips();
   const router = useRouter();
   const { colors } = useTheme();
 
+  useEffect(() => {
+    if (step !== 1 || !createdTripId) return;
+    setJoinCodeLoading(true);
+    fetch(`${CHAT_API_BASE.replace(/\/$/, '')}/register-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trip_id: createdTripId }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.code) setJoinCode(data.code);
+      })
+      .catch(() => setJoinCode(null))
+      .finally(() => setJoinCodeLoading(false));
+  }, [step, createdTripId]);
+
   const handleNext = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (step < STEPS.length - 1) {
-      setStep(step + 1);
+    if (step === 0) {
+      const tripId = addTrip({
+        name: name.trim() || 'New Trip',
+        destination: 'TBD',
+        status: 'planning',
+        createdBy: user?.id ?? 'current',
+      });
+      setCreatedTripId(tripId);
+      setStep(1);
     } else {
-      handleCreate();
+      if (createdTripId) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        router.replace(`/trip/${createdTripId}`);
+      }
     }
   };
 
@@ -45,22 +75,7 @@ export default function CreateTripScreen() {
     if (step > 0) setStep(step - 1);
   };
 
-  const handleCreate = () => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const tripId = addTrip({
-      name: name.trim() || 'New Trip',
-      destination: destination.trim() || 'TBD',
-      startingCity: startCity.trim() || undefined,
-      status: 'planning',
-      createdBy: user?.id ?? 'current',
-    });
-    router.replace(`/trip/${tripId}`);
-  };
-
-  const canProceed =
-    step === 0
-      ? (name.trim().length > 0 && destination.trim().length > 0)
-      : true;
+  const canProceed = step === 0 ? name.trim().length > 0 : true;
 
   return (
     <KeyboardAvoidingView
@@ -105,7 +120,7 @@ export default function CreateTripScreen() {
             style={styles.stepContent}>
             <Text style={[styles.stepTitle, { color: colors.text }]}>Trip details</Text>
             <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              Enter a trip name and destination to continue. You can edit these later.
+              Enter a trip name. You can edit it later.
             </Text>
             <TextInput
               style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
@@ -113,20 +128,6 @@ export default function CreateTripScreen() {
               placeholderTextColor={colors.textTertiary}
               value={name}
               onChangeText={setName}
-            />
-            <TextInput
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
-              placeholder="Starting city (optional)"
-              placeholderTextColor={colors.textTertiary}
-              value={startCity}
-              onChangeText={setStartCity}
-            />
-            <TextInput
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
-              placeholder="Destination or event"
-              placeholderTextColor={colors.textTertiary}
-              value={destination}
-              onChangeText={setDestination}
             />
           </Animated.View>
         )}
@@ -137,19 +138,18 @@ export default function CreateTripScreen() {
             style={styles.stepContent}>
             <Text style={[styles.stepTitle, { color: colors.text }]}>Invite friends</Text>
             <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              Share a link — anyone who clicks joins the trip
+              Share this code. Friends enter it in Join trip.
             </Text>
-            <View style={[styles.inviteBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <Text style={[styles.inviteLink, { color: colors.textSecondary }]}>goingplaces.app/join/abc123</Text>
-              <Pressable
-                style={styles.copyBtn}
-                onPress={() =>
-                  Haptics.notificationAsync(
-                    Haptics.NotificationFeedbackType.Success
-                  )
-                }>
-                <Text style={[styles.copyBtnText, { color: colors.tint }]}>Copy</Text>
-              </Pressable>
+            <View style={[styles.codeBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {joinCodeLoading ? (
+                <ActivityIndicator size="large" color={colors.tint} style={styles.codeLoader} />
+              ) : joinCode ? (
+                <Text style={[styles.joinCode, { color: colors.tint }]}>{joinCode}</Text>
+              ) : (
+                <Text style={[styles.codeFallback, { color: colors.textSecondary }]}>
+                  Couldn’t load code. Try again.
+                </Text>
+              )}
             </View>
           </Animated.View>
         )}
@@ -237,25 +237,25 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.lg,
   },
-  inviteBox: {
-    flexDirection: 'row',
+  codeBox: {
     alignItems: 'center',
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    paddingHorizontal: Spacing.md,
+    justifyContent: 'center',
+    borderRadius: Radius.lg,
+    borderWidth: 2,
+    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+    minHeight: 88,
   },
-  inviteLink: {
-    flex: 1,
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 14,
-    paddingVertical: Spacing.md,
-  },
-  copyBtn: {
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-  },
-  copyBtnText: {
+  joinCode: {
     fontFamily: 'DMSans_600SemiBold',
+    fontSize: 36,
+    letterSpacing: 8,
+  },
+  codeLoader: {
+    marginVertical: Spacing.sm,
+  },
+  codeFallback: {
+    fontFamily: 'DMSans_400Regular',
     fontSize: 14,
   },
   footer: {

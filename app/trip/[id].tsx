@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,11 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Spacing, Radius } from '@/constants/theme';
 import { useTrips, type ItineraryDay } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
+import { useUser } from '@/contexts/user-context';
+
+const CHAT_WS_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
+
+type ChatMessage = { id: string; content: string; isAI: boolean; name: string };
 
 const TABS = ['Chat', 'Plan', 'Costs', 'Map', 'Album'] as const;
 
@@ -238,10 +243,21 @@ function createStyles(colors: typeof Colors.light) {
   });
 }
 
+const FALLBACK_MESSAGES: ChatMessage[] = [
+  { id: '1', content: "Hey! Let's figure out where we're staying.", isAI: false, name: 'You' },
+  {
+    id: '2',
+    content: "I can help with that! Based on your dates and destination, I'd recommend looking at areas near downtown. What's your budget per night?",
+    isAI: true,
+    name: 'AI Assistant',
+  },
+];
+
 export default function TripDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { getTrip } = useTrips();
+  const { user } = useUser();
   const { colors } = useTheme();
   const trip = id ? getTrip(id) : null;
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -249,15 +265,48 @@ export default function TripDetailScreen() {
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
   const [message, setMessage] = useState('');
   const messagesScrollRef = useRef<ScrollView>(null);
-  const [messages, setMessages] = useState([
-    { id: '1', content: "Hey! Let's figure out where we're staying.", isAI: false, name: 'You' },
-    {
-      id: '2',
-      content: "I can help with that! Based on your dates and destination, I'd recommend looking at areas near downtown. What's your budget per night?",
-      isAI: true,
-      name: 'AI Assistant',
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    CHAT_WS_BASE ? [] : FALLBACK_MESSAGES
+  );
+  const wsRef = useRef<WebSocket | null>(null);
+
+  const userDisplayName = user ? `${user.firstName} ${user.lastName}`.trim() || 'You' : 'You';
+
+  useEffect(() => {
+    if (!CHAT_WS_BASE || !id) return;
+    const base = CHAT_WS_BASE.replace(/^http/, 'ws');
+    const wsUrl = `${base}/ws/${encodeURIComponent(id)}?user_id=${encodeURIComponent(user?.id ?? '')}&user_name=${encodeURIComponent(userDisplayName)}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data as string);
+        if (data.type === 'history' && Array.isArray(data.messages)) {
+          setMessages(
+            data.messages.map((m: { id: string; content: string; is_ai: boolean; user_name: string }) => ({
+              id: String(m.id),
+              content: m.content,
+              isAI: m.is_ai,
+              name: m.user_name || 'Unknown',
+            }))
+          );
+        } else if (data.type === 'message' && data.message) {
+          const m = data.message;
+          setMessages((prev) => [
+            ...prev,
+            { id: String(m.id), content: m.content, isAI: m.is_ai, name: m.user_name || 'Unknown' },
+          ]);
+          setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
+        }
+      } catch (_) {}
+    };
+
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
+  }, [id, CHAT_WS_BASE, user?.id, userDisplayName]);
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -284,12 +333,19 @@ export default function TripDetailScreen() {
   const handleSendMessage = () => {
     if (!message.trim()) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setMessages((prev) => [
-      ...prev,
-      { id: Date.now().toString(), content: message.trim(), isAI: false, name: 'You' },
-    ]);
+    const text = message.trim();
     setMessage('');
-    setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
+
+    if (CHAT_WS_BASE && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ content: text, is_ai: false }));
+      setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
+    } else {
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now().toString(), content: text, isAI: false, name: 'You' },
+      ]);
+      setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
+    }
   };
 
   return (
