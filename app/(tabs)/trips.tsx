@@ -20,17 +20,27 @@ import { TripCard } from '@/components/trip-card';
 import { Spacing, Radius } from '@/constants/theme';
 import { useTrips } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
+import { useUser } from '@/contexts/user-context';
 
 const CHAT_API_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
 
 export default function TripsScreen() {
-  const { trips, joinTrip } = useTrips();
+  const { trips, tripsLoading, effectiveUserId, addTripFromApi } = useTrips();
   const { colors } = useTheme();
+  const { user } = useUser();
   const router = useRouter();
   const [joinModalVisible, setJoinModalVisible] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [joinLoading, setJoinLoading] = useState(false);
   const joinCodeInputRef = useRef<TextInput>(null);
+
+  const finishJoin = (trip: { id: string; name: string; destination: string; status: string; createdBy: string; createdAt: number }) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    addTripFromApi(trip);
+    setJoinModalVisible(false);
+    setJoinCode('');
+    router.push(`/trip/${trip.id}`);
+  };
 
   const handleOpenJoinModal = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -45,14 +55,6 @@ export default function TripsScreen() {
     }
   }, [joinModalVisible]);
 
-  const finishJoin = (tripId: string) => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    joinTrip(tripId);
-    setJoinModalVisible(false);
-    setJoinCode('');
-    router.push(`/trip/${tripId}`);
-  };
-
   const handleJoinTrip = async () => {
     if (joinLoading) return;
     const codeTrimmed = joinCode.trim();
@@ -60,17 +62,31 @@ export default function TripsScreen() {
       Alert.alert('Enter code', 'Enter the 4-digit code.');
       return;
     }
+    const userId = effectiveUserId ?? 'guest';
     setJoinLoading(true);
     try {
       const base = CHAT_API_BASE.replace(/\/$/, '');
-      console.log('CHAT_API_BASE:', base);
-      const res = await fetch(`${base}/resolve-code?code=${encodeURIComponent(codeTrimmed)}`);
+      const res = await fetch(`${base}/trips/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: codeTrimmed, user_id: userId }),
+      });
       if (res.ok) {
-        const data = await res.json();
-        if (data?.trip_id) {
-          finishJoin(data.trip_id);
-          return;
-        }
+        const trip = await res.json();
+        const localTrip = {
+          id: trip.id,
+          name: trip.name,
+          destination: trip.destination ?? 'TBD',
+          status: trip.status ?? 'planning',
+          createdBy: trip.createdBy ?? '',
+          createdAt: typeof trip.createdAt === 'number' ? trip.createdAt : Date.now(),
+        };
+        finishJoin(localTrip);
+        return;
+      }
+      if (res.status === 404) {
+        Alert.alert('Invalid code', 'That code was not found. Check the number and try again.');
+        return;
       }
       Alert.alert('Invalid code', 'That code wasn’t found. Check the number and try again.');
     } catch {
@@ -97,25 +113,33 @@ export default function TripsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
         <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
-          <View style={styles.headerRow}>
-            <Text style={[styles.title, { color: colors.text }]}>Your trips</Text>
-            <Pressable
-              style={[styles.joinBtn, { backgroundColor: colors.tint }]}
-              onPress={handleOpenJoinModal}
-              accessibilityRole="button"
-              accessibilityLabel="Join trip">
-              <Text style={styles.joinBtnText}>Join trip</Text>
-              <IconSymbol name="link" size={16} color="#FFFFFF" />
-            </Pressable>
-          </View>
+          <Text style={[styles.title, { color: colors.text }]}>Your trips</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             {uniqueTrips.length === 0
               ? 'Trips you create or join will appear here'
               : `${uniqueTrips.length} trip${uniqueTrips.length === 1 ? '' : 's'}`}
           </Text>
+          <Pressable
+            style={({ pressed }) => [
+              styles.joinButton,
+              { backgroundColor: colors.tint },
+              pressed && styles.buttonPressed,
+            ]}
+            onPress={handleOpenJoinModal}
+            accessibilityRole="button"
+            accessibilityLabel="Join trip">
+            <IconSymbol name="link" size={20} color="#FFFFFF" />
+            <Text style={styles.joinButtonText}>Join trip</Text>
+          </Pressable>
         </Animated.View>
 
-      {currentTrips.length > 0 && (
+      {tripsLoading && uniqueTrips.length === 0 && (
+        <Animated.View entering={FadeInDown.springify()} style={styles.loadingRow}>
+          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading your trips…</Text>
+        </Animated.View>
+      )}
+
+      {!tripsLoading && currentTrips.length > 0 && (
         <Animated.View entering={FadeInDown.delay(100).springify()}>
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Current</Text>
           {currentTrips.map((trip, i) => (
@@ -124,7 +148,7 @@ export default function TripsScreen() {
         </Animated.View>
       )}
 
-      {pastTrips.length > 0 && (
+      {!tripsLoading && pastTrips.length > 0 && (
         <Animated.View
           entering={FadeInDown.delay(200).springify()}
           style={styles.pastSection}>
@@ -135,7 +159,7 @@ export default function TripsScreen() {
         </Animated.View>
       )}
 
-      {uniqueTrips.length === 0 && (
+      {!tripsLoading && uniqueTrips.length === 0 && (
         <Animated.View
           entering={FadeInDown.delay(200).springify()}
           style={styles.empty}>
@@ -225,34 +249,31 @@ const styles = StyleSheet.create({
   header: {
     marginBottom: Spacing.xl,
   },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.md,
-  },
   title: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 28,
-    flex: 1,
-  },
-  joinBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    borderRadius: Radius.full,
-  },
-  joinBtnText: {
-    fontFamily: 'DMSans_600SemiBold',
-    fontSize: 14,
-    color: '#FFFFFF',
   },
   subtitle: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 15,
     marginTop: 4,
+    marginBottom: Spacing.md,
+  },
+  joinButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.lg,
+  },
+  joinButtonText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 17,
+    color: '#FFFFFF',
+  },
+  buttonPressed: {
+    opacity: 0.9,
   },
   sectionTitle: {
     fontFamily: 'Fraunces_600SemiBold',
@@ -280,6 +301,14 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlign: 'center',
     paddingHorizontal: Spacing.xl,
+  },
+  loadingRow: {
+    paddingVertical: Spacing.xl,
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 15,
   },
   modalOverlay: {
     flex: 1,

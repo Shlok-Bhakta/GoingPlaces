@@ -17,7 +17,7 @@ import type { Trip, TripStatus } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
 
 const { width } = Dimensions.get('window');
-const CARD_WIDTH = width - Spacing.xl * 2;
+const CARD_WIDTH = width - Spacing.lg * 2;
 const CARD_HEIGHT = 160;
 
 const COVER_GRADIENTS = [

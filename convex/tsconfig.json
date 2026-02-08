@@ -1,8 +1,0 @@
-{
-  "compilerOptions": {
-    "allowJs": true,
-    "strict": true,
-    "noEmit": true
-  },
-  "include": ["**/*"]
-}

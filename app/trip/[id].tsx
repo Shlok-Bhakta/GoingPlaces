@@ -1,27 +1,37 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Haptics from 'expo-haptics';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  Pressable,
-  ScrollView,
-  TextInput,
+  Dimensions,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import PagerView from 'react-native-pager-view';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import * as Haptics from 'expo-haptics';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { MarkdownText } from '@/components/markdown-text';
 import { Colors, Spacing, Radius } from '@/constants/theme';
 import { useTrips, type ItineraryDay, type Itinerary } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
 import { useUser } from '@/contexts/user-context';
 
 const CHAT_WS_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
+const ALBUM_MEDIA_STORAGE_KEY = '@GoingPlaces/album_media';
 
 type ChatMessage = { id: string; content: string; isAI: boolean; name: string; user_id?: string; timestamp?: string };
 
@@ -306,6 +316,58 @@ function createStyles(colors: typeof Colors.light) {
       color: colors.textTertiary,
       marginTop: 2,
     },
+    albumTabContainer: { flex: 1 },
+    addPhotosSection: {
+      paddingVertical: Spacing.lg,
+      paddingHorizontal: Spacing.lg,
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexShrink: 0,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.borderLight,
+    },
+    addPhotosButton: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: Spacing.xl,
+      paddingHorizontal: Spacing.xl * 2,
+      borderRadius: Radius.xl,
+      minWidth: 240,
+      overflow: 'hidden',
+    },
+    addPhotosLabel: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 18,
+      color: '#FFFFFF',
+      marginTop: Spacing.sm,
+    },
+    addPhotosButtonPressed: { opacity: 0.9 },
+    albumScrollContent: { padding: Spacing.lg, paddingBottom: 120 },
+    albumSectionTitle: {
+      fontFamily: 'Fraunces_600SemiBold',
+      fontSize: 20,
+      color: colors.text,
+      marginBottom: Spacing.sm,
+    },
+    albumSectionText: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 15,
+      color: colors.textSecondary,
+      lineHeight: 22,
+      marginBottom: Spacing.lg,
+    },
+    albumMediaGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: Spacing.sm,
+    },
+    albumMediaItem: {
+      width: 96,
+      height: 96,
+      borderRadius: Radius.md,
+      backgroundColor: colors.surfaceMuted,
+      overflow: 'hidden',
+    },
     mentionDropdown: {
       position: 'absolute',
       left: Spacing.md,
@@ -366,6 +428,72 @@ const FALLBACK_MESSAGES: ChatMessage[] = [
   },
 ];
 
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+function ImageViewerOverlay({
+  imageUris,
+  initialPage,
+  onClose,
+}: {
+  imageUris: string[];
+  initialPage: number;
+  onClose: () => void;
+}) {
+  if (imageUris.length === 0) return null;
+
+  return (
+    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.92)' }]}>
+      <PagerView style={{ flex: 1 }} initialPage={initialPage}>
+        {imageUris.map((uri, index) => (
+          <View key={`${uri}-${index}`} style={styles.pagerPage} collapsable={false}>
+            <Pressable 
+              style={styles.pagerPageInner}
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close image viewer">
+              <Image
+                source={{ uri }}
+                style={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}
+                contentFit="contain"
+              />
+            </Pressable>
+          </View>
+        ))}
+      </PagerView>
+      {/* Close button in top-right corner */}
+      <View style={{ position: 'absolute', top: 50, right: 20, zIndex: 10 }}>
+        <Pressable
+          onPress={onClose}
+          style={({ pressed }) => ({
+            backgroundColor: pressed ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.2)',
+            width: 40,
+            height: 40,
+            borderRadius: 20,
+            justifyContent: 'center',
+            alignItems: 'center',
+          })}
+          accessibilityRole="button"
+          accessibilityLabel="Close image viewer">
+          <IconSymbol name="xmark" size={20} color="#FFFFFF" />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  pagerPage: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pagerPageInner: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+});
+
 export default function TripDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -376,6 +504,10 @@ export default function TripDetailScreen() {
   const styles = useMemo(() => createStyles(colors), [colors]);
 
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
+  const [albumMediaByTripId, setAlbumMediaByTripId] = useState<Record<string, { uri: string; type: 'image' | 'video' }[]>>({});
+  const [viewingImageIndex, setViewingImageIndex] = useState<number | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const albumMediaLoadedRef = useRef(false);
   const [message, setMessage] = useState('');
   const [mentionVisible, setMentionVisible] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
@@ -410,8 +542,95 @@ export default function TripDetailScreen() {
     return list.filter((o) => o.name.toLowerCase().startsWith(f));
   }, [messages, mentionFilter]);
 
+  // Refresh album media
+  const handleRefreshMedia = async () => {
+    if (!id) return;
+    setRefreshing(true);
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+
+    if (base) {
+      try {
+        const res = await fetch(`${base}/trips/${encodeURIComponent(id)}/media`);
+        if (res.ok) {
+          const data: { uri: string; type: string }[] = await res.json();
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [id]: (data || []).map((m) => ({
+              uri: m.uri.startsWith('http') ? m.uri : `${base}${m.uri}`,
+              type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+            })),
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to refresh media:', error);
+      }
+    }
+    setRefreshing(false);
+  };
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+
+    if (base) {
+      fetch(`${base}/trips/${encodeURIComponent(id)}/media`)
+        .then((res) => (res.ok ? res.json() : []))
+        .then((data: { uri: string; type: string }[]) => {
+          if (cancelled) return;
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [id]: (data || []).map((m) => ({
+              // Convert relative paths to full URLs
+              uri: m.uri.startsWith('http') ? m.uri : `${base}${m.uri}`,
+              type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+            })),
+          }));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          AsyncStorage.getItem(ALBUM_MEDIA_STORAGE_KEY).then((raw) => {
+            if (cancelled) return;
+            try {
+              if (raw) {
+                const parsed = JSON.parse(raw) as Record<string, { uri: string; type: 'image' | 'video' }[]>;
+                setAlbumMediaByTripId((prev) => ({ ...prev, [id]: parsed[id] ?? [] }));
+              }
+            } catch (_) {}
+          });
+        })
+        .finally(() => {
+          if (!cancelled) albumMediaLoadedRef.current = true;
+        });
+      return () => {
+        cancelled = true;
+      };
+    } else {
+      AsyncStorage.getItem(ALBUM_MEDIA_STORAGE_KEY).then((raw) => {
+        if (cancelled) return;
+        try {
+          if (raw) {
+            const parsed = JSON.parse(raw) as Record<string, { uri: string; type: 'image' | 'video' }[]>;
+            setAlbumMediaByTripId((prev) => ({ ...prev, [id]: parsed[id] ?? [] }));
+          }
+        } catch (_) {}
+        albumMediaLoadedRef.current = true;
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (!albumMediaLoadedRef.current || CHAT_WS_BASE) return;
+    AsyncStorage.setItem(ALBUM_MEDIA_STORAGE_KEY, JSON.stringify(albumMediaByTripId)).catch(() => {});
+  }, [albumMediaByTripId, CHAT_WS_BASE]);
+
   useEffect(() => {
     if (!CHAT_WS_BASE || !id) return;
+    // Clear messages when switching trips so we don't show another trip's chat
+    setMessages([]);
     const base = CHAT_WS_BASE.replace(/^http/, 'ws');
     const wsUrl = `${base}/ws/${encodeURIComponent(id)}?user_id=${encodeURIComponent(user?.id ?? '')}&user_name=${encodeURIComponent(userDisplayName)}`;
     const ws = new WebSocket(wsUrl);
@@ -533,6 +752,94 @@ export default function TripDetailScreen() {
         { id: Date.now().toString(), content: text, isAI: false, name: userDisplayName, user_id: user?.id ?? '', timestamp: new Date().toISOString() },
       ]);
       setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
+    }
+  };
+
+  const handleAddPictures = async () => {
+    if (!id) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') return;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      allowsMultipleSelection: true,
+      quality: 0.8,
+    });
+    if (result.canceled) return;
+    
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+    if (base) {
+      try {
+        // Upload actual files to backend
+        const formData = new FormData();
+        for (const asset of result.assets) {
+          const uri = asset.uri;
+          const filename = uri.split('/').pop() || 'image.jpg';
+          const match = /\.(\w+)$/.exec(filename);
+          const type = match ? `image/${match[1]}` : 'image/jpeg';
+          
+          // @ts-ignore - FormData in React Native accepts uri
+          formData.append('files', {
+            uri,
+            name: filename,
+            type,
+          });
+        }
+        
+        const res = await fetch(`${base}/trips/${encodeURIComponent(id)}/media/upload`, {
+          method: 'POST',
+          body: formData,
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        });
+        
+        if (res.ok) {
+          const added = (await res.json()) as { uri: string; type: string }[];
+          // URIs are now backend URLs like /uploads/filename.jpg
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [id]: [
+              ...(prev[id] ?? []),
+              ...added.map((m) => ({
+                uri: `${base}${m.uri}`, // Full URL for display
+                type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+              })),
+            ],
+          }));
+        } else {
+          // Fallback: store device URIs locally
+          const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
+            uri: a.uri,
+            type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+          }));
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [id]: [...(prev[id] ?? []), ...newItems],
+          }));
+        }
+      } catch (err) {
+        console.error('Upload failed:', err);
+        // Fallback: store device URIs locally
+        const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
+          uri: a.uri,
+          type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+        }));
+        setAlbumMediaByTripId((prev) => ({
+          ...prev,
+          [id]: [...(prev[id] ?? []), ...newItems],
+        }));
+      }
+    } else {
+      // No backend: store device URIs locally
+      const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
+        uri: a.uri,
+        type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+      }));
+      setAlbumMediaByTripId((prev) => ({
+        ...prev,
+        [id]: [...(prev[id] ?? []), ...newItems],
+      }));
     }
   };
 
@@ -676,13 +983,19 @@ export default function TripDetailScreen() {
                               styles.messageBubble,
                               fromMe ? styles.bubbleUser : styles.bubbleAI,
                             ]}>
-                            <Text
-                              style={[
+                            <MarkdownText
+                              baseStyle={StyleSheet.flatten([
                                 styles.messageText,
                                 fromMe ? styles.messageTextUser : styles.messageTextAI,
-                              ]}>
+                              ])}
+                              codeStyle={
+                                fromMe
+                                  ? { backgroundColor: 'rgba(255,255,255,0.25)' }
+                                  : undefined
+                              }
+                            >
                               {msg.content}
-                            </Text>
+                            </MarkdownText>
                           </View>
                         </View>
                       </Animated.View>
@@ -842,19 +1155,99 @@ export default function TripDetailScreen() {
       )}
 
       {activeTab === 'Album' && (
-        <ScrollView
-          style={styles.tabContent}
-          contentContainerStyle={styles.tabContentInner}
-          showsVerticalScrollIndicator={false}>
-          <Animated.View entering={FadeInDown.springify()}>
-            <Text style={styles.placeholderTitle}>Shared photos</Text>
-            <Text style={styles.placeholderText}>
-              Photos from your trip will appear here. Share memories with your
-              group!
+        <View style={styles.albumTabContainer}>
+          <View style={styles.addPhotosSection}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.addPhotosButton,
+                pressed && styles.addPhotosButtonPressed,
+              ]}
+              onPress={handleAddPictures}
+              accessibilityRole="button"
+              accessibilityLabel="Add photos and videos to trip album">
+              <LinearGradient
+                colors={['#E8A68A', '#C45C3E']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
+              <IconSymbol name="photo.on.rectangle.angled" size={40} color="#FFFFFF" />
+              <Text style={styles.addPhotosLabel}>Add photos & videos</Text>
+            </Pressable>
+          </View>
+          <ScrollView
+            style={styles.tabContent}
+            contentContainerStyle={styles.albumScrollContent}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefreshMedia}
+                tintColor={colors.accent}
+                colors={[colors.accent]}
+              />
+            }>
+            <Text style={styles.albumSectionTitle}>Shared photos & videos</Text>
+            <Text style={styles.albumSectionText}>
+              {(() => {
+                const media = albumMediaByTripId[id ?? ''] ?? [];
+                return media.length > 0
+                  ? `This trip has its own album. ${media.length} item${media.length !== 1 ? 's' : ''} in this shared space. Media is not shared with other trips.`
+                  : 'Add photos and videos above. They stay in this trip only—no sharing between trips.';
+              })()}
             </Text>
-          </Animated.View>
-        </ScrollView>
+            {(() => {
+              const media = albumMediaByTripId[id ?? ''] ?? [];
+              const imageItems = media.filter((m): m is { uri: string; type: 'image' } => m.type === 'image');
+              if (media.length === 0) return null;
+              let imageIndex = 0;
+              return (
+                <View style={styles.albumMediaGrid}>
+                  {media.map((item, index) => (
+                    <View key={`${item.uri}-${index}`} style={styles.albumMediaItem}>
+                      {item.type === 'image' ? (() => {
+                          const idx = imageIndex++;
+                          return (
+                            <Pressable
+                              style={{ width: 96, height: 96 }}
+                              onPress={() => {
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                setViewingImageIndex(idx);
+                              }}>
+                              <Image source={{ uri: item.uri }} style={{ width: 96, height: 96 }} contentFit="cover" />
+                            </Pressable>
+                          );
+                        })() : (
+                        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                          <Text style={styles.albumSectionText}>Video</Text>
+                        </View>
+                      )}
+                    </View>
+                  ))}
+                </View>
+              );
+            })()}
+          </ScrollView>
+        </View>
       )}
+
+      <Modal
+        visible={viewingImageIndex !== null}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setViewingImageIndex(null)}>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+          <ImageViewerOverlay
+            imageUris={(() => {
+              const media = albumMediaByTripId[id ?? ''] ?? [];
+              return media.filter((m): m is { uri: string; type: 'image' } => m.type === 'image').map((m) => m.uri);
+            })()}
+            initialPage={viewingImageIndex ?? 0}
+            onClose={() => setViewingImageIndex(null)}
+          />
+        </GestureHandlerRootView>
+      </Modal>
     </View>
   );
 }

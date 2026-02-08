@@ -37,7 +37,7 @@ pip install --upgrade pip -q
 pip install -r requirements.txt -q
 
 # Set environment variables
-export CHAT_DB_PATH="${SCRIPT_DIR}/chat.db"
+export DB_PATH="${SCRIPT_DIR}/goingplaces.db"
 export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-8000}"
 
