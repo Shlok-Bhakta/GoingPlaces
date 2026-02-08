@@ -238,7 +238,7 @@ function createStyles(colors: typeof Colors.light) {
       flexDirection: 'row',
       alignItems: 'flex-end',
       padding: Spacing.md,
-      paddingBottom: Spacing.md,
+      paddingBottom: Spacing.lg,
       gap: Spacing.sm,
       backgroundColor: colors.background,
       borderTopWidth: 1,
