@@ -49,6 +49,13 @@ from db import (
     create_user as db_create_user,
     update_trip_destination,
     set_trip_cover,
+    add_expense,
+    get_expenses,
+    get_expense_splits,
+    calculate_trip_balances,
+    get_trip_members,
+    update_expense,
+    delete_expense,
 )
 from google_places import (
     search_places as gp_search_places,
@@ -94,6 +101,10 @@ app.add_middleware(
 # Setup uploads directory
 UPLOADS_DIR = Path(__file__).parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
+
+# Setup receipts directory
+RECEIPTS_DIR = Path(__file__).parent / "receipts"
+RECEIPTS_DIR.mkdir(exist_ok=True)
 
 # trip_id -> set of active WebSocket connections
 rooms: dict[str, set[WebSocket]] = {}
@@ -269,7 +280,11 @@ def api_my_trips(user_id: str) -> list[dict[str, Any]]:
         if t.get("coverPhotoName"):
             media = gp_get_photo_media(t["coverPhotoName"], max_width_px=800)
             if not media.get("error") and media.get("photoUri"):
-                t = {**t, "coverImage": media["photoUri"], "coverAttributions": t.get("coverPhotoAttributions") or []}
+                t = {
+                    **t,
+                    "coverImage": media["photoUri"],
+                    "coverAttributions": t.get("coverPhotoAttributions") or [],
+                }
         result.append(t)
     return result
 
@@ -282,7 +297,9 @@ def get_trip_cover_image(trip_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="No cover image for this trip")
     media = gp_get_photo_media(trip["coverPhotoName"], max_width_px=800)
     if media.get("error"):
-        raise HTTPException(status_code=502, detail=media.get("error", "Failed to fetch cover image"))
+        raise HTTPException(
+            status_code=502, detail=media.get("error", "Failed to fetch cover image")
+        )
     return {
         "photoUri": media["photoUri"],
         "attributions": trip.get("coverPhotoAttributions") or [],
@@ -1052,7 +1069,10 @@ def _call_add_to_plan_resolve_sync(
     """Call LLM to check add-to-plan conflicts and return either add itinerary or conflict + resolution options."""
     if not OPENROUTER_API_KEY:
         logger.warning("OpenRouter: no API key set for add-to-plan resolve")
-        return {"action": "add", "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion)}
+        return {
+            "action": "add",
+            "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion),
+        }
     try:
         from openai import OpenAI
 
@@ -1071,7 +1091,10 @@ def _call_add_to_plan_resolve_sync(
             replace_title=suggestion.get("replaceTitle") or "",
         )
         api_messages = [
-            {"role": "system", "content": "You output only the requested XML tags and JSON. No other text."},
+            {
+                "role": "system",
+                "content": "You output only the requested XML tags and JSON. No other text.",
+            },
             {"role": "user", "content": prompt},
         ]
         response = client.chat.completions.create(
@@ -1081,12 +1104,20 @@ def _call_add_to_plan_resolve_sync(
             temperature=0.3,
         )
         if not response or not response.choices:
-            return {"action": "add", "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion)}
+            return {
+                "action": "add",
+                "itinerary": _apply_suggestion_to_itinerary(
+                    current_itinerary, suggestion
+                ),
+            }
         text = (response.choices[0].message.content or "").strip()
         return _parse_add_to_plan_resolve_response(text, current_itinerary, suggestion)
     except Exception as e:
         logger.exception("Add-to-plan resolve LLM error: %s", e)
-        return {"action": "add", "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion)}
+        return {
+            "action": "add",
+            "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion),
+        }
 
 
 def _apply_suggestion_to_itinerary(
@@ -1108,11 +1139,14 @@ def _apply_suggestion_to_itinerary(
         for day in current_itinerary:
             for a in day.get("activities") or []:
                 if (replace_id and a.get("id") == replace_id) or (
-                    replace_title and (a.get("title") or "").strip().lower() == replace_title.lower()
+                    replace_title
+                    and (a.get("title") or "").strip().lower() == replace_title.lower()
                 ):
                     a.update(new_act)
                     a["id"] = a.get("id") or new_act["id"]
-                    day["activities"] = _sort_activities_chronologically(day.get("activities") or [])
+                    day["activities"] = _sort_activities_chronologically(
+                        day.get("activities") or []
+                    )
                     return current_itinerary
         # replace target not found, add to first day
         if current_itinerary:
@@ -1120,7 +1154,15 @@ def _apply_suggestion_to_itinerary(
             acts.append(new_act)
             current_itinerary[0]["activities"] = _sort_activities_chronologically(acts)
         else:
-            current_itinerary = [{"id": "day-1", "dayNumber": 1, "title": "Day 1", "date": None, "activities": [new_act]}]
+            current_itinerary = [
+                {
+                    "id": "day-1",
+                    "dayNumber": 1,
+                    "title": "Day 1",
+                    "date": None,
+                    "activities": [new_act],
+                }
+            ]
         return current_itinerary
     day_label = (suggestion.get("dayLabel") or "").strip().lower()
     target_day = None
@@ -1134,7 +1176,15 @@ def _apply_suggestion_to_itinerary(
     if not target_day and current_itinerary:
         target_day = current_itinerary[0]
     if not target_day:
-        return [{"id": "day-1", "dayNumber": 1, "title": "Day 1", "date": None, "activities": [new_act]}]
+        return [
+            {
+                "id": "day-1",
+                "dayNumber": 1,
+                "title": "Day 1",
+                "date": None,
+                "activities": [new_act],
+            }
+        ]
     acts = target_day.setdefault("activities", [])
     acts.append(new_act)
     target_day["activities"] = _sort_activities_chronologically(acts)
@@ -1146,20 +1196,33 @@ def _parse_add_to_plan_resolve_response(
 ) -> dict[str, Any]:
     """Parse LLM response into action 'add' with itinerary or 'conflict' with message and resolutionOptions."""
     if not text:
-        return {"action": "add", "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion)}
+        return {
+            "action": "add",
+            "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion),
+        }
     resolution_match = re.search(
         r"<resolution>\s*(.+?)\s*</resolution>", text, re.DOTALL | re.IGNORECASE
     )
-    resolution = (resolution_match.group(1).strip().lower() if resolution_match else "").replace(" ", "_")
+    resolution = (
+        resolution_match.group(1).strip().lower() if resolution_match else ""
+    ).replace(" ", "_")
     if resolution == "conflict":
         message_match = re.search(
             r"<message>\s*([\s\S]*?)\s*</message>", text, re.DOTALL | re.IGNORECASE
         )
-        message = (message_match.group(1).strip() if message_match else "This time slot is already used.").strip()
+        message = (
+            message_match.group(1).strip()
+            if message_match
+            else "This time slot is already used."
+        ).strip()
         options_match = re.search(
-            r"<resolution_options>\s*([\s\S]*?)\s*</resolution_options>", text, re.DOTALL | re.IGNORECASE
+            r"<resolution_options>\s*([\s\S]*?)\s*</resolution_options>",
+            text,
+            re.DOTALL | re.IGNORECASE,
         )
-        options_raw = (options_match.group(1).strip() if options_match else "[]").strip()
+        options_raw = (
+            options_match.group(1).strip() if options_match else "[]"
+        ).strip()
         json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", options_raw)
         if json_match:
             options_raw = json_match.group(1).strip()
@@ -1178,7 +1241,11 @@ def _parse_add_to_plan_resolve_response(
             if not oid or not label:
                 continue
             item = {"id": oid, "label": label}
-            if "itinerary" in opt and isinstance(opt["itinerary"], list) and len(opt["itinerary"]) > 0:
+            if (
+                "itinerary" in opt
+                and isinstance(opt["itinerary"], list)
+                and len(opt["itinerary"]) > 0
+            ):
                 parsed = _parse_itinerary_json(json.dumps(opt["itinerary"]))
                 if parsed:
                     item["itinerary"] = parsed
@@ -1204,7 +1271,10 @@ def _parse_add_to_plan_resolve_response(
         parsed = _parse_itinerary_json(raw)
         if parsed:
             return {"action": "add", "itinerary": parsed}
-    return {"action": "add", "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion)}
+    return {
+        "action": "add",
+        "itinerary": _apply_suggestion_to_itinerary(current_itinerary, suggestion),
+    }
 
 
 def _call_openrouter_sync(
@@ -1503,6 +1573,209 @@ def _sort_activities_chronologically(activities: list[dict]) -> list[dict]:
     return sorted(activities, key=lambda a: _parse_time_to_minutes(a.get("time") or ""))
 
 
+# --- Expenses and Bill Splitting ---
+
+
+@app.get("/trips/{trip_id}/expenses")
+def api_get_expenses(trip_id: str) -> list[dict[str, Any]]:
+    """Get all expenses for a trip."""
+    return get_expenses(trip_id)
+
+
+@app.get("/trips/{trip_id}/members")
+def api_get_trip_members(trip_id: str) -> list[dict[str, Any]]:
+    """Get all members of a trip with their user details."""
+    return get_trip_members(trip_id)
+
+
+class AddExpenseBody(BaseModel):
+    paid_by_user_id: str
+    description: str
+    amount: float
+    expense_date: str
+    currency: str = "USD"
+    category: str | None = None
+    receipt_image_url: str | None = None
+    splits: list[dict[str, Any]] | None = None  # [{"user_id": str, "amount": float}]
+
+
+@app.post("/trips/{trip_id}/expenses")
+def api_add_expense(trip_id: str, body: AddExpenseBody) -> dict[str, Any]:
+    """Add an expense to a trip with optional splits."""
+    splits_tuples = None
+    if body.splits:
+        splits_tuples = [(s["user_id"], float(s["amount"])) for s in body.splits]
+
+    expense = add_expense(
+        trip_id=trip_id,
+        paid_by_user_id=body.paid_by_user_id,
+        description=body.description,
+        amount=body.amount,
+        expense_date=body.expense_date,
+        currency=body.currency,
+        category=body.category,
+        receipt_image_url=body.receipt_image_url,
+        splits=splits_tuples,
+    )
+    return expense
+
+
+class UpdateExpenseBody(BaseModel):
+    description: str | None = None
+    amount: float | None = None
+    expense_date: str | None = None
+
+
+@app.patch("/expenses/{expense_id}")
+def api_update_expense(expense_id: str, body: UpdateExpenseBody) -> dict[str, Any]:
+    """Update an expense."""
+    updated = update_expense(
+        expense_id=expense_id,
+        description=body.description,
+        amount=body.amount,
+        expense_date=body.expense_date,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Expense not found or no changes")
+    return {"success": True}
+
+
+@app.delete("/expenses/{expense_id}")
+def api_delete_expense(expense_id: str) -> dict[str, Any]:
+    """Delete an expense and its splits."""
+    deleted = delete_expense(expense_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    return {"success": True}
+
+
+@app.get("/trips/{trip_id}/balances")
+def api_get_trip_balances(trip_id: str) -> dict[str, Any]:
+    """Calculate and return trip balances and suggested settlements."""
+    return calculate_trip_balances(trip_id)
+
+
+@app.post("/trips/{trip_id}/receipts/upload")
+async def upload_receipt_and_ocr(
+    trip_id: str,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """
+    Upload a receipt image, save it, and use OpenRouter Gemini 2.0 Flash for OCR.
+    Returns parsed receipt data (description, amount, date, items).
+    """
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
+
+    # Generate unique filename
+    file_ext = Path(file.filename or "receipt.jpg").suffix
+    unique_filename = f"{uuid.uuid4()}{file_ext}"
+    file_path = RECEIPTS_DIR / unique_filename
+
+    # Save file
+    content = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    # Convert image to base64 for OpenRouter
+    import base64
+
+    with open(file_path, "rb") as img_file:
+        img_data = base64.b64encode(img_file.read()).decode("utf-8")
+
+    # Determine mime type
+    mime_type = file.content_type or "image/jpeg"
+    if not mime_type.startswith("image/"):
+        mime_type = "image/jpeg"
+
+    # Call OpenRouter with Gemini 2.0 Flash for OCR
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+
+        response = client.chat.completions.create(
+            model="google/gemini-2.0-flash-001",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": """Analyze this receipt and extract the following information in JSON format:
+{
+  "merchant": "store/restaurant name",
+  "total": 0.00,
+  "date": "YYYY-MM-DD",
+  "items": [
+    {"name": "item name", "price": 0.00, "quantity": 1}
+  ],
+  "currency": "USD"
+}
+
+Return ONLY valid JSON, no other text.""",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{img_data}"},
+                        },
+                    ],
+                }
+            ],
+            max_tokens=1000,
+            temperature=0.2,
+        )
+
+        result_text = response.choices[0].message.content or ""
+
+        # Try to parse JSON from response
+        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", result_text)
+        if json_match:
+            result_text = json_match.group(1).strip()
+
+        try:
+            parsed_data = json.loads(result_text)
+        except json.JSONDecodeError:
+            parsed_data = {
+                "merchant": "Unknown",
+                "total": 0.0,
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "items": [],
+                "currency": "USD",
+            }
+
+        receipt_url = f"/receipts/{unique_filename}"
+
+        return {
+            "receipt_url": receipt_url,
+            "receipt_data": parsed_data,
+        }
+
+    except Exception as e:
+        logger.exception("Receipt OCR failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
+
+
+@app.get("/receipts/{filename}")
+async def serve_receipt(filename: str) -> FileResponse:
+    """Serve uploaded receipt images."""
+    file_path = RECEIPTS_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    return FileResponse(file_path)
+
+
+@app.get("/trips/{trip_id}/receipts")
+def api_get_trip_receipts(trip_id: str) -> list[dict[str, Any]]:
+    """Get all receipts (expenses with receipt_image_url) for a trip."""
+    expenses = get_expenses(trip_id)
+    receipts = [e for e in expenses if e.get("receipt_image_url")]
+    return receipts
+
+
 def _parse_itinerary_json(raw: str) -> list[dict] | None:
     """Parse and normalize itinerary JSON string to our schema.
     Activities within each day are sorted chronologically by time."""
@@ -1521,8 +1794,7 @@ def _parse_itinerary_json(raw: str) -> list[dict] | None:
                     "id": a.get("id") or f"act-{j + 1}",
                     "time": str(a.get("time", "")).strip() or None,
                     "title": str(a.get("title") or ""),
-                    "description": str(a.get("description", "")).strip()
-                    or None,
+                    "description": str(a.get("description", "")).strip() or None,
                     "location": str(a.get("location", "")).strip() or None,
                 }
                 for j, a in enumerate(day.get("activities") or [])
