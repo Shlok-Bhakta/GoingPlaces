@@ -5,17 +5,31 @@ Custom Python backend for Going Places chat.
 - When a message contains @gemini, call OpenRouter (openai/gpt-5-nano) with full chat context
   and optionally extract an itinerary for the Plan tab.
 """
+
 import asyncio
 import json
 import logging
 import os
 import queue
 import re
+import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+    Query,
+    File,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from db import (
@@ -30,8 +44,15 @@ from db import (
     join_trip_by_code,
     get_trips_for_user,
     get_trip as db_get_trip,
+    add_trip_media,
+    get_trip_media,
+    create_user as db_create_user,
 )
-from google_places import search_places as gp_search_places, get_place_details as gp_get_place_details, get_distance_matrix as gp_get_distance_matrix
+from google_places import (
+    search_places as gp_search_places,
+    get_place_details as gp_get_place_details,
+    get_distance_matrix as gp_get_distance_matrix,
+)
 
 # Load .env.local from project root so EXPO_PUBLIC_OPENROUTER_API_KEY is available
 _load_env_paths = [
@@ -42,8 +63,12 @@ for _p in _load_env_paths:
     if os.path.isfile(_p):
         load_dotenv(_p)
         break
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("EXPO_PUBLIC_OPENROUTER_API_KEY")
-GOOGLE_MAPS_API_KEY = os.environ.get("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY") or os.environ.get("GOOGLE_MAPS_API_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") or os.environ.get(
+    "EXPO_PUBLIC_OPENROUTER_API_KEY"
+)
+GOOGLE_MAPS_API_KEY = os.environ.get(
+    "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY"
+) or os.environ.get("GOOGLE_MAPS_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -57,6 +82,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Setup uploads directory
+UPLOADS_DIR = Path(__file__).parent / "uploads"
+UPLOADS_DIR.mkdir(exist_ok=True)
+
 # trip_id -> set of active WebSocket connections
 rooms: dict[str, set[WebSocket]] = {}
 
@@ -67,12 +96,16 @@ def get_room(trip_id: str) -> set[WebSocket]:
     return rooms[trip_id]
 
 
-async def _drain_status_queue(status_queue: queue.Queue[str], room: set[WebSocket]) -> None:
+async def _drain_status_queue(
+    status_queue: queue.Queue[str], room: set[WebSocket]
+) -> None:
     """Drain status messages from queue and broadcast typing_status to the room until cancelled."""
     loop = asyncio.get_event_loop()
     while True:
         try:
-            msg = await loop.run_in_executor(None, lambda: status_queue.get(timeout=0.25))
+            msg = await loop.run_in_executor(
+                None, lambda: status_queue.get(timeout=0.25)
+            )
             for ws in room:
                 try:
                     await ws.send_json({"type": "typing_status", "message": msg})
@@ -102,11 +135,15 @@ def startup() -> None:
     if OPENROUTER_API_KEY:
         logger.info("OpenRouter: API key loaded (length=%d)", len(OPENROUTER_API_KEY))
     else:
-        logger.warning("OpenRouter: no API key (set OPENROUTER_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY in .env.local)")
+        logger.warning(
+            "OpenRouter: no API key (set OPENROUTER_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY in .env.local)"
+        )
     if GOOGLE_MAPS_API_KEY:
         logger.info("Google Maps: API key loaded for Places/Distance (LLM tools)")
     else:
-        logger.warning("Google Maps: no API key (set EXPO_PUBLIC_GOOGLE_MAPS_API_KEY in .env.local for realistic itinerary tools)")
+        logger.warning(
+            "Google Maps: no API key (set EXPO_PUBLIC_GOOGLE_MAPS_API_KEY in .env.local for realistic itinerary tools)"
+        )
 
 
 @app.get("/health")
@@ -126,7 +163,9 @@ def api_register_code(body: RegisterCodeBody) -> dict[str, str]:
 
 
 @app.get("/resolve-code")
-def api_resolve_code(code: str = Query(..., min_length=4, max_length=4)) -> dict[str, Any]:
+def api_resolve_code(
+    code: str = Query(..., min_length=4, max_length=4),
+) -> dict[str, Any]:
     """Resolve 4-digit code to trip_id. Returns 404 if invalid."""
     trip_id = resolve_code(code)
     if not trip_id:
@@ -170,6 +209,39 @@ def api_join_trip(body: JoinTripBody) -> dict[str, Any]:
     return trip
 
 
+class CreateUserBody(BaseModel):
+    user_id: str
+    email: str
+    first_name: str
+    last_name: str
+    username: str = ""
+    avatar_url: str = ""
+
+
+@app.post("/users")
+def api_create_user(body: CreateUserBody) -> dict[str, Any]:
+    """Create a user account. Returns user object or 400 if user already exists."""
+    try:
+        user = db_create_user(
+            email=body.email,
+            first_name=body.first_name,
+            last_name=body.last_name,
+            username=body.username or None,
+            avatar_url=body.avatar_url or None,
+            user_id=body.user_id,
+        )
+        return user
+    except Exception as e:
+        # Handle duplicate email/username errors
+        err_msg = str(e).lower()
+        if "unique" in err_msg or "duplicate" in err_msg:
+            raise HTTPException(
+                status_code=400,
+                detail="User with this email or username already exists",
+            )
+        raise HTTPException(status_code=500, detail=f"Failed to create user: {str(e)}")
+
+
 @app.get("/users/{user_id}/trips")
 def api_my_trips(user_id: str) -> list[dict[str, Any]]:
     """Return all trips the user is a member of (persisted across refresh)."""
@@ -183,6 +255,71 @@ def list_messages(
 ) -> list[dict[str, Any]]:
     """REST fallback: fetch message history for a trip."""
     return get_messages(trip_id, limit=limit)
+
+
+class TripMediaItem(BaseModel):
+    uri: str
+    type: str  # 'image' | 'video'
+
+
+class TripMediaBody(BaseModel):
+    items: list[TripMediaItem]
+
+
+@app.get("/trips/{trip_id}/media")
+def list_trip_media(trip_id: str) -> list[dict[str, Any]]:
+    """List all media (photos/videos) for a trip. Persisted in DB."""
+    return get_trip_media(trip_id)
+
+
+@app.post("/trips/{trip_id}/media/upload")
+async def upload_trip_media(
+    trip_id: str,
+    files: list[UploadFile] = File(...),
+) -> list[dict[str, Any]]:
+    """Upload media files for a trip. Returns list of media records with URLs."""
+    added = []
+    for file in files:
+        # Generate unique filename
+        file_ext = Path(file.filename or "image.jpg").suffix
+        unique_filename = f"{uuid.uuid4()}{file_ext}"
+        file_path = UPLOADS_DIR / unique_filename
+
+        # Save file
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        # Determine media type
+        content_type = file.content_type or ""
+        media_type = "video" if "video" in content_type else "image"
+
+        # Store in DB with URL path
+        uri = f"/uploads/{unique_filename}"
+        added.append(add_trip_media(trip_id, uri, media_type))
+
+    return added
+
+
+@app.get("/uploads/{filename}")
+async def serve_upload(filename: str) -> FileResponse:
+    """Serve uploaded media files."""
+    file_path = UPLOADS_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path)
+
+
+@app.post("/trips/{trip_id}/media")
+def api_add_trip_media(trip_id: str, body: TripMediaBody) -> list[dict[str, Any]]:
+    """Add media items to a trip. Each item has uri and type ('image' or 'video')."""
+    added = []
+    for item in body.items:
+        t = (item.type or "image").lower()
+        if t not in ("image", "video"):
+            t = "image"
+        added.append(add_trip_media(trip_id, item.uri, t))
+    return added
 
 
 @app.get("/trips/{trip_id}/itinerary")
@@ -204,7 +341,9 @@ class PutItineraryBody(BaseModel):
 @app.put("/trips/{trip_id}/itinerary")
 async def put_trip_itinerary(trip_id: str, body: PutItineraryBody) -> dict[str, Any]:
     """Save itinerary for a trip and broadcast to all clients in the trip's WebSocket room."""
-    normalized = _parse_itinerary_json(json.dumps(body.itinerary)) if body.itinerary else None
+    normalized = (
+        _parse_itinerary_json(json.dumps(body.itinerary)) if body.itinerary else None
+    )
     if not normalized:
         raise HTTPException(status_code=400, detail="Invalid itinerary")
     set_itinerary(trip_id, json.dumps(normalized))
@@ -240,7 +379,9 @@ def api_search_food_places(
 ) -> dict[str, Any]:
     """Search for restaurants/food by type and city. Returns name, address, rating, place_id. Use when the user wants a meal but didn't name a place."""
     query = f"{food_type.strip()} restaurant {location.strip()}"
-    return gp_search_places(query=query, location=location.strip(), max_results=max_results)
+    return gp_search_places(
+        query=query, location=location.strip(), max_results=max_results
+    )
 
 
 @app.get("/places/details/{place_id}")
@@ -258,7 +399,9 @@ class DistanceMatrixBody(BaseModel):
 @app.post("/places/distance-matrix")
 def api_distance_matrix(body: DistanceMatrixBody) -> dict[str, Any]:
     """Get travel distance and duration between origins and destinations (addresses or lat,lng)."""
-    return gp_get_distance_matrix(origins=body.origins, destinations=body.destinations, mode=body.mode)
+    return gp_get_distance_matrix(
+        origins=body.origins, destinations=body.destinations, mode=body.mode
+    )
 
 
 # --- OpenRouter (@gemini) integration: google/gemini-3-flash-preview via OpenRouter API (OpenAI-compatible) ---
@@ -351,9 +494,19 @@ PLACES_TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query, e.g. 'coffee shop Union Square San Francisco' or 'Golden Gate Bridge'"},
-                    "location": {"type": "string", "description": "Optional location bias: city name or lat,lng"},
-                    "max_results": {"type": "integer", "description": "Max number of results (default 5)", "default": 5},
+                    "query": {
+                        "type": "string",
+                        "description": "Search query, e.g. 'coffee shop Union Square San Francisco' or 'Golden Gate Bridge'",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "Optional location bias: city name or lat,lng",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Max number of results (default 5)",
+                        "default": 5,
+                    },
                 },
                 "required": ["query"],
             },
@@ -367,7 +520,10 @@ PLACES_TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "place_id": {"type": "string", "description": "Place ID from search_places"},
+                    "place_id": {
+                        "type": "string",
+                        "description": "Place ID from search_places",
+                    },
                 },
                 "required": ["place_id"],
             },
@@ -381,9 +537,19 @@ PLACES_TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "food_type": {"type": "string", "description": "Type of food or meal, e.g. 'sushi', 'seafood', 'breakfast', 'Italian', 'brunch'"},
-                    "location": {"type": "string", "description": "City or area, e.g. 'San Francisco', 'Napa'. Use trip destination when possible."},
-                    "max_results": {"type": "integer", "description": "Max results to return (default 5)", "default": 5},
+                    "food_type": {
+                        "type": "string",
+                        "description": "Type of food or meal, e.g. 'sushi', 'seafood', 'breakfast', 'Italian', 'brunch'",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "City or area, e.g. 'San Francisco', 'Napa'. Use trip destination when possible.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Max results to return (default 5)",
+                        "default": 5,
+                    },
                 },
                 "required": ["food_type", "location"],
             },
@@ -397,9 +563,21 @@ PLACES_TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "origins": {"type": "array", "items": {"type": "string"}, "description": "List of origin addresses or 'lat,lng'"},
-                    "destinations": {"type": "array", "items": {"type": "string"}, "description": "List of destination addresses or 'lat,lng'"},
-                    "mode": {"type": "string", "description": "Travel mode: driving, walking, bicycling, transit", "default": "driving"},
+                    "origins": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of origin addresses or 'lat,lng'",
+                    },
+                    "destinations": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of destination addresses or 'lat,lng'",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "Travel mode: driving, walking, bicycling, transit",
+                        "default": "driving",
+                    },
                 },
                 "required": ["origins", "destinations"],
             },
@@ -504,6 +682,7 @@ def _call_openrouter_sync(
         return "The AI assistant is not configured. Set OPENROUTER_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY in .env.local."
     try:
         from openai import OpenAI
+
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=OPENROUTER_API_KEY,
@@ -516,9 +695,17 @@ def _call_openrouter_sync(
             trip_prefix = TRIP_INFO_PREFIX.format(name=name, destination=destination)
         # Prepend itinerary context (existing plan or "none") to first user message
         if existing_itinerary:
-            itinerary_context = trip_prefix + ITINERARY_CONTEXT_PREFIX + json.dumps(existing_itinerary, indent=2) + ITINERARY_CONTEXT_SUFFIX
+            itinerary_context = (
+                trip_prefix
+                + ITINERARY_CONTEXT_PREFIX
+                + json.dumps(existing_itinerary, indent=2)
+                + ITINERARY_CONTEXT_SUFFIX
+            )
         else:
-            itinerary_context = trip_prefix + "=== CONTEXT ===\nThere is no itinerary in the Plan tab yet. If the user asks what the plan is, say they don't have one yet and offer to help create one.\n\n--- Conversation: ---\n\n"
+            itinerary_context = (
+                trip_prefix
+                + "=== CONTEXT ===\nThere is no itinerary in the Plan tab yet. If the user asks what the plan is, say they don't have one yet and offer to help create one.\n\n--- Conversation: ---\n\n"
+            )
         # Build OpenAI-format messages with system instruction
         api_messages: list[dict] = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
         for i, m in enumerate(messages):
@@ -538,10 +725,19 @@ def _call_openrouter_sync(
         for _round in range(max_tool_rounds):
             if status_queue is not None:
                 try:
-                    status_queue.put_nowait("Planning your itinerary..." if _round == 0 else "Writing your response...")
+                    status_queue.put_nowait(
+                        "Planning your itinerary..."
+                        if _round == 0
+                        else "Writing your response..."
+                    )
                 except queue.Full:
                     pass
-            logger.info("OpenRouter: calling model=%s with %d messages (round %d)", OPENROUTER_MODEL, len(api_messages), _round + 1)
+            logger.info(
+                "OpenRouter: calling model=%s with %d messages (round %d)",
+                OPENROUTER_MODEL,
+                len(api_messages),
+                _round + 1,
+            )
             kwargs: dict[str, Any] = {
                 "model": OPENROUTER_MODEL,
                 "messages": api_messages,
@@ -562,10 +758,20 @@ def _call_openrouter_sync(
             if not tool_calls:
                 break
             # Append assistant message with tool_calls
-            assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or None}
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": msg.content or None,
+            }
             if tool_calls:
                 assistant_msg["tool_calls"] = [
-                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
                     for tc in tool_calls
                 ]
             api_messages.append(assistant_msg)
@@ -573,7 +779,10 @@ def _call_openrouter_sync(
             for tc in tool_calls:
                 if status_queue is not None:
                     try:
-                        if tc.function.name == "search_places" or tc.function.name == "search_food_places":
+                        if (
+                            tc.function.name == "search_places"
+                            or tc.function.name == "search_food_places"
+                        ):
                             status_queue.put_nowait("Searching for places...")
                         elif tc.function.name == "get_place_details":
                             status_queue.put_nowait("Checking opening hours...")
@@ -584,11 +793,17 @@ def _call_openrouter_sync(
                     except queue.Full:
                         pass
                 try:
-                    args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else (tc.function.arguments or {})
+                    args = (
+                        json.loads(tc.function.arguments)
+                        if isinstance(tc.function.arguments, str)
+                        else (tc.function.arguments or {})
+                    )
                 except json.JSONDecodeError:
                     args = {}
                 result = _execute_tool(tc.function.name, args)
-                api_messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                api_messages.append(
+                    {"role": "tool", "tool_call_id": tc.id, "content": result}
+                )
         if out:
             logger.info("OpenRouter: got response length=%d", len(out))
             return out
@@ -603,7 +818,9 @@ def _parse_suggestions(text: str) -> list[dict] | None:
     """Extract <suggestions> JSON array from AI response for add-to-plan options."""
     if not text:
         return None
-    match = re.search(r"<suggestions>\s*([\s\S]*?)\s*</suggestions>", text, re.DOTALL | re.IGNORECASE)
+    match = re.search(
+        r"<suggestions>\s*([\s\S]*?)\s*</suggestions>", text, re.DOTALL | re.IGNORECASE
+    )
     if not match:
         return None
     raw = match.group(1).strip()
@@ -621,21 +838,26 @@ def _parse_suggestions(text: str) -> list[dict] | None:
             title = item.get("title") or item.get("name") or ""
             if not title:
                 continue
-            out.append({
-                "title": str(title),
-                "description": str(item.get("description", "")).strip() or None,
-                "location": str(item.get("location", "")).strip() or None,
-                "dayLabel": str(item.get("dayLabel", "")).strip() or None,
-                "time": str(item.get("time", "")).strip() or None,
-                "replaceActivityId": str(item.get("replaceActivityId", "")).strip() or None,
-                "replaceTitle": str(item.get("replaceTitle", "")).strip() or None,
-            })
+            out.append(
+                {
+                    "title": str(title),
+                    "description": str(item.get("description", "")).strip() or None,
+                    "location": str(item.get("location", "")).strip() or None,
+                    "dayLabel": str(item.get("dayLabel", "")).strip() or None,
+                    "time": str(item.get("time", "")).strip() or None,
+                    "replaceActivityId": str(item.get("replaceActivityId", "")).strip()
+                    or None,
+                    "replaceTitle": str(item.get("replaceTitle", "")).strip() or None,
+                }
+            )
         return out if out else None
     except (json.JSONDecodeError, TypeError):
         return None
 
 
-def _parse_structured_response(text: str) -> tuple[str, list[dict] | None, list[dict] | None]:
+def _parse_structured_response(
+    text: str,
+) -> tuple[str, list[dict] | None, list[dict] | None]:
     """
     Parse the AI's structured response. Returns (chat_message, itinerary_list_or_none, suggestions_list_or_none).
     - If <action>respond</action>: return (content of <response>, None, suggestions if present)
@@ -645,10 +867,18 @@ def _parse_structured_response(text: str) -> tuple[str, list[dict] | None, list[
     if not text:
         return ("", None, None)
     text = text.strip()
-    action_match = re.search(r"<action>\s*(.+?)\s*</action>", text, re.DOTALL | re.IGNORECASE)
-    response_match = re.search(r"<response>\s*([\s\S]*?)\s*</response>", text, re.DOTALL | re.IGNORECASE)
-    itinerary_match = re.search(r"<itinerary>\s*([\s\S]*?)\s*</itinerary>", text, re.DOTALL | re.IGNORECASE)
-    action = (action_match.group(1).strip().lower() if action_match else "").replace(" ", "_")
+    action_match = re.search(
+        r"<action>\s*(.+?)\s*</action>", text, re.DOTALL | re.IGNORECASE
+    )
+    response_match = re.search(
+        r"<response>\s*([\s\S]*?)\s*</response>", text, re.DOTALL | re.IGNORECASE
+    )
+    itinerary_match = re.search(
+        r"<itinerary>\s*([\s\S]*?)\s*</itinerary>", text, re.DOTALL | re.IGNORECASE
+    )
+    action = (action_match.group(1).strip().lower() if action_match else "").replace(
+        " ", "_"
+    )
     response_text = response_match.group(1).strip() if response_match else text
     suggestions = _parse_suggestions(text)
     if action == "update_itinerary" and itinerary_match:
@@ -690,22 +920,26 @@ def _parse_itinerary_json(raw: str) -> list[dict] | None:
             if not isinstance(day, dict):
                 continue
             activities = day.get("activities") or []
-            out.append({
-                "id": day.get("id") or f"day-{i+1}",
-                "dayNumber": int(day.get("dayNumber", i + 1)),
-                "title": str(day.get("title") or f"Day {i + 1}"),
-                "date": str(day.get("date", "")).strip() or None,
-                "activities": [
-                    {
-                        "id": a.get("id") or f"act-{j+1}",
-                        "time": str(a.get("time", "")).strip() or None,
-                        "title": str(a.get("title") or ""),
-                        "description": str(a.get("description", "")).strip() or None,
-                        "location": str(a.get("location", "")).strip() or None,
-                    }
-                    for j, a in enumerate(activities) if isinstance(a, dict)
-                ],
-            })
+            out.append(
+                {
+                    "id": day.get("id") or f"day-{i + 1}",
+                    "dayNumber": int(day.get("dayNumber", i + 1)),
+                    "title": str(day.get("title") or f"Day {i + 1}"),
+                    "date": str(day.get("date", "")).strip() or None,
+                    "activities": [
+                        {
+                            "id": a.get("id") or f"act-{j + 1}",
+                            "time": str(a.get("time", "")).strip() or None,
+                            "title": str(a.get("title") or ""),
+                            "description": str(a.get("description", "")).strip()
+                            or None,
+                            "location": str(a.get("location", "")).strip() or None,
+                        }
+                        for j, a in enumerate(activities)
+                        if isinstance(a, dict)
+                    ],
+                }
+            )
         return out if out else None
     except (json.JSONDecodeError, TypeError):
         return None
@@ -733,11 +967,13 @@ async def websocket_chat(
                 itinerary_list = json.loads(itinerary_raw)
             except json.JSONDecodeError:
                 pass
-        await websocket.send_json({
-            "type": "history",
-            "messages": history,
-            **({"itinerary": itinerary_list} if itinerary_list else {}),
-        })
+        await websocket.send_json(
+            {
+                "type": "history",
+                "messages": history,
+                **({"itinerary": itinerary_list} if itinerary_list else {}),
+            }
+        )
 
         while True:
             data = await websocket.receive_text()
@@ -745,6 +981,26 @@ async def websocket_chat(
                 msg = json.loads(data)
             except json.JSONDecodeError:
                 await websocket.send_json({"type": "error", "message": "Invalid JSON"})
+                continue
+
+            # Handle typing indicator events
+            msg_type = msg.get("type", "")
+            if msg_type == "typing":
+                # Broadcast typing indicator to others in the room
+                typing_payload = {
+                    "type": "typing",
+                    "user_id": msg.get("user_id", ""),
+                    "user_name": msg.get("user_name", "Unknown"),
+                }
+                for ws in room:
+                    if ws != websocket:  # Don't send back to sender
+                        try:
+                            await ws.send_json(typing_payload)
+                        except Exception:
+                            pass
+                continue
+            elif msg_type == "stop_typing":
+                # Could broadcast stop_typing, but we handle timeout on frontend
                 continue
 
             content = (msg.get("content") or "").strip()
@@ -773,7 +1029,9 @@ async def websocket_chat(
 
             # If user mentioned @gemini, show typing, call Gemini, then add to Plan tab and notify
             if "@gemini" in content.lower():
-                logger.info("OpenRouter: @gemini mention detected for trip_id=%s", trip_id)
+                logger.info(
+                    "OpenRouter: @gemini mention detected for trip_id=%s", trip_id
+                )
                 # Broadcast typing indicator so clients show "Gemini is typing..."
                 for ws in room:
                     try:
@@ -795,7 +1053,9 @@ async def websocket_chat(
                     except json.JSONDecodeError:
                         pass
                 status_queue: queue.Queue[str] = queue.Queue()
-                drain_task = asyncio.create_task(_drain_status_queue(status_queue, room))
+                drain_task = asyncio.create_task(
+                    _drain_status_queue(status_queue, room)
+                )
                 try:
                     ai_text = await asyncio.to_thread(
                         _call_openrouter_sync,
@@ -814,31 +1074,50 @@ async def websocket_chat(
                         await drain_task
                     except asyncio.CancelledError:
                         pass
-                chat_message, itinerary_list, suggestions_list = _parse_structured_response(ai_text)
+                chat_message, itinerary_list, suggestions_list = (
+                    _parse_structured_response(ai_text)
+                )
                 # Retry with JSON-only prompt if update_itinerary was intended but parse failed
-                if itinerary_list is None and ("```json" in ai_text or "```" in ai_text or "<itinerary>" in ai_text.lower()):
+                if itinerary_list is None and (
+                    "```json" in ai_text
+                    or "```" in ai_text
+                    or "<itinerary>" in ai_text.lower()
+                ):
                     logger.info("OpenRouter: retrying with JSON-only prompt")
                     try:
                         retry_text = await asyncio.to_thread(
-                            _call_openrouter_sync, messages, JSON_ONLY_PROMPT, existing_itinerary, trip_info, None
+                            _call_openrouter_sync,
+                            messages,
+                            JSON_ONLY_PROMPT,
+                            existing_itinerary,
+                            trip_info,
+                            None,
                         )
                         itinerary_list = _parse_itinerary_json(retry_text.strip())
                         if itinerary_list is None and "```" in retry_text:
-                            itinerary_list = _extract_itinerary_from_response(retry_text)
+                            itinerary_list = _extract_itinerary_from_response(
+                                retry_text
+                            )
                         if itinerary_list and not chat_message:
                             chat_message = ITINERARY_DONE_MESSAGE
                     except Exception as retry_err:
                         logger.warning("OpenRouter: JSON retry failed: %s", retry_err)
                 if itinerary_list:
                     set_itinerary(trip_id, json.dumps(itinerary_list))
-                    payload_it = {"type": "itinerary", "trip_id": trip_id, "itinerary": itinerary_list}
+                    payload_it = {
+                        "type": "itinerary",
+                        "trip_id": trip_id,
+                        "itinerary": itinerary_list,
+                    }
                     for ws in room:
                         try:
                             await ws.send_json(payload_it)
                         except Exception:
                             pass
                 if not chat_message:
-                    chat_message = ai_text or "I couldn't generate a response. Please try again."
+                    chat_message = (
+                        ai_text or "I couldn't generate a response. Please try again."
+                    )
                 ai_saved = add_message(
                     trip_id=trip_id,
                     content=chat_message,
@@ -855,7 +1134,10 @@ async def websocket_chat(
                     try:
                         await ws.send_json(payload_ai)
                     except Exception as send_err:
-                        logger.warning("OpenRouter: failed to send AI message to client: %s", send_err)
+                        logger.warning(
+                            "OpenRouter: failed to send AI message to client: %s",
+                            send_err,
+                        )
                         dead_ai.add(ws)
                 for ws in dead_ai:
                     room.discard(ws)

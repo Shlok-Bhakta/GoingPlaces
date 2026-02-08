@@ -1,4 +1,5 @@
 """SQLite persistence for trips, members, chat, join codes, users, trip images, and expenses."""
+
 import os
 import random
 import sqlite3
@@ -21,7 +22,13 @@ def _parse_created_at(created_at: Optional[str]) -> int:
     except (ValueError, TypeError):
         return 0
 
-DB_PATH = os.environ.get("DB_PATH", os.environ.get("CHAT_DB_PATH", os.path.join(os.path.dirname(__file__), "goingplaces.db")))
+
+DB_PATH = os.environ.get(
+    "DB_PATH",
+    os.environ.get(
+        "CHAT_DB_PATH", os.path.join(os.path.dirname(__file__), "goingplaces.db")
+    ),
+)
 
 
 @contextmanager
@@ -76,8 +83,12 @@ def init_db() -> None:
                 FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_trip_members_user ON trip_members(user_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_trip_members_trip ON trip_members(trip_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trip_members_user ON trip_members(user_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trip_members_trip ON trip_members(trip_id)"
+        )
 
         # --- Users (referenced by trip_members, messages, trip_images, expenses) ---
         conn.execute("""
@@ -123,6 +134,31 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trip_codes_trip_id ON trip_codes(trip_id)"
         )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trip_memberships (
+                trip_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                name TEXT,
+                destination TEXT,
+                joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (trip_id, user_id)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trip_memberships_user ON trip_memberships(user_id)"
+        )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trip_media (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trip_id TEXT NOT NULL,
+                uri TEXT NOT NULL,
+                type TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trip_media_trip ON trip_media(trip_id)"
+        )
 
         # --- Trip itinerary ---
         conn.execute("""
@@ -148,8 +184,12 @@ def init_db() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_trip_images_trip ON trip_images(trip_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_trip_images_user ON trip_images(user_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trip_images_trip ON trip_images(trip_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trip_images_user ON trip_images(user_id)"
+        )
 
         # --- Expenses ---
         conn.execute("""
@@ -168,8 +208,12 @@ def init_db() -> None:
                 FOREIGN KEY (paid_by_user_id) REFERENCES users(id)
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_expenses_trip ON expenses(trip_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_expenses_paid_by ON expenses(paid_by_user_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_expenses_trip ON expenses(trip_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_expenses_paid_by ON expenses(paid_by_user_id)"
+        )
 
         # --- Expense splits (who owes what per expense) ---
         conn.execute("""
@@ -185,8 +229,12 @@ def init_db() -> None:
                 UNIQUE(expense_id, user_id)
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_expense_splits_expense ON expense_splits(expense_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_expense_splits_user ON expense_splits(user_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_expense_splits_expense ON expense_splits(expense_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_expense_splits_user ON expense_splits(user_id)"
+        )
 
         # --- Settlements (direct payments between users) ---
         conn.execute("""
@@ -203,7 +251,9 @@ def init_db() -> None:
                 FOREIGN KEY (to_user_id) REFERENCES users(id)
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_settlements_trip ON settlements(trip_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_settlements_trip ON settlements(trip_id)"
+        )
 
 
 def _random_4_digit() -> str:
@@ -293,7 +343,13 @@ def create_trip(
             INSERT INTO trips (id, name, destination, status, created_by, created_at)
             VALUES (?, ?, ?, ?, ?, datetime('now'))
             """,
-            (trip_id, (name or "Trip").strip(), (destination or "TBD").strip(), status or "planning", created_by_user_id),
+            (
+                trip_id,
+                (name or "Trip").strip(),
+                (destination or "TBD").strip(),
+                status or "planning",
+                created_by_user_id,
+            ),
         )
         add_trip_member(conn, trip_id, created_by_user_id)
         code = _register_code_conn(conn, trip_id)
@@ -305,13 +361,17 @@ def create_trip(
 
 def _register_code_conn(conn: sqlite3.Connection, trip_id: str) -> str:
     """Get or create 4-digit code for trip (caller holds conn)."""
-    row = conn.execute("SELECT code FROM trip_codes WHERE trip_id = ?", (trip_id,)).fetchone()
+    row = conn.execute(
+        "SELECT code FROM trip_codes WHERE trip_id = ?", (trip_id,)
+    ).fetchone()
     if row:
         return row["code"]
     code = _random_4_digit()
     while conn.execute("SELECT 1 FROM trip_codes WHERE code = ?", (code,)).fetchone():
         code = _random_4_digit()
-    conn.execute("INSERT INTO trip_codes (code, trip_id) VALUES (?, ?)", (code, trip_id))
+    conn.execute(
+        "INSERT INTO trip_codes (code, trip_id) VALUES (?, ?)", (code, trip_id)
+    )
     return code
 
 
@@ -445,7 +505,56 @@ def get_messages(trip_id: str, limit: int = 200) -> list[dict]:
     ]
 
 
+def add_trip_media(trip_id: str, uri: str, media_type: str) -> dict:
+    """Add one media item for a trip. type is 'image' or 'video'."""
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO trip_media (trip_id, uri, type)
+            VALUES (?, ?, ?)
+            """,
+            (trip_id, uri, media_type),
+        )
+        row_id = cur.lastrowid
+        row = conn.execute(
+            "SELECT id, trip_id, uri, type, created_at FROM trip_media WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+    return {
+        "id": str(row["id"]),
+        "trip_id": row["trip_id"],
+        "uri": row["uri"],
+        "type": row["type"],
+        "created_at": row["created_at"],
+    }
+
+
+def get_trip_media(trip_id: str) -> list[dict]:
+    """Return all media for a trip, oldest first."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, trip_id, uri, type, created_at
+            FROM trip_media
+            WHERE trip_id = ?
+            ORDER BY created_at ASC
+            """,
+            (trip_id,),
+        ).fetchall()
+    return [
+        {
+            "id": str(r["id"]),
+            "trip_id": r["trip_id"],
+            "uri": r["uri"],
+            "type": r["type"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
 # --- Users ---
+
 
 def create_user(
     email: str,
@@ -497,6 +606,7 @@ def _row_to_user(r: sqlite3.Row) -> dict[str, Any]:
 
 
 # --- Trip images ---
+
 
 def add_trip_image(
     trip_id: str,
@@ -559,6 +669,7 @@ def _row_to_trip_image(r: sqlite3.Row) -> dict[str, Any]:
 
 # --- Expenses ---
 
+
 def add_expense(
     trip_id: str,
     paid_by_user_id: str,
@@ -583,7 +694,17 @@ def add_expense(
             INSERT INTO expenses (id, trip_id, paid_by_user_id, description, amount, currency, category, receipt_image_url, expense_date)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (exp_id, trip_id, paid_by_user_id, description, amount, currency, category, receipt_image_url, expense_date),
+            (
+                exp_id,
+                trip_id,
+                paid_by_user_id,
+                description,
+                amount,
+                currency,
+                category,
+                receipt_image_url,
+                expense_date,
+            ),
         )
         if splits:
             for user_id, amt in splits:

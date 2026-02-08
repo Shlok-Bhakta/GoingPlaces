@@ -1,22 +1,30 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
+import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  Pressable,
-  ScrollView,
-  TextInput,
+  Dimensions,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
   Animated as RNAnimated,
   Linking,
 } from 'react-native';
-import Animated, { FadeInDown } from 'react-native-reanimated';
-import * as Haptics from 'expo-haptics';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import ImageViewerOverlay from '@/components/image-viewer-overlay';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { MarkdownText } from '@/components/markdown-text';
 import { Colors, Spacing, Radius } from '@/constants/theme';
@@ -25,6 +33,7 @@ import { useTheme } from '@/contexts/theme-context';
 import { useUser } from '@/contexts/user-context';
 
 const CHAT_WS_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
+const ALBUM_MEDIA_STORAGE_KEY = '@GoingPlaces/album_media';
 
 type SuggestionOption = {
   title: string;
@@ -50,6 +59,29 @@ type ChatMessage = {
 
 const GROUP_GAP_MS = 5 * 60 * 1000; // 5 min
 const DIVIDER_GAP_MS = 30 * 60 * 1000; // 30 min
+
+// Color palette for chat bubbles (warm, pastel, accessible)
+const USER_COLORS = [
+  { bg: '#9FAEC0', text: '#1C1C1E' },     // Deeper blue-gray
+  { bg: '#BFAD9F', text: '#1C1C1E' },     // Deeper warm beige
+  { bg: '#A8BFB0', text: '#1C1C1E' },     // Deeper sage green
+  { bg: '#BFA8BD', text: '#1C1C1E' },     // Deeper lavender
+  { bg: '#A0B8BF', text: '#1C1C1E' },     // Deeper sky blue
+  { bg: '#BFBCA0', text: '#1C1C1E' },     // Deeper sand
+  { bg: '#B0A8BF', text: '#1C1C1E' },     // Deeper periwinkle
+  { bg: '#BFA8B0', text: '#1C1C1E' },     // Deeper dusty rose
+];
+
+// Assign color to user based on their ID/name
+function getUserColor(userId: string | undefined, userName: string): { bg: string; text: string } {
+  const key = userId || userName;
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return USER_COLORS[Math.abs(hash) % USER_COLORS.length];
+}
 
 function formatDividerLabel(iso: string, prevIso?: string): string {
   const d = new Date(iso);
@@ -175,9 +207,9 @@ function createStyles(colors: typeof Colors.light) {
     messageBubbleWrapper: { maxWidth: '85%' },
     messageBubbleWrapperAI: { alignItems: 'flex-start' },
     messageBubbleWrapperUser: { alignItems: 'flex-end' },
-    messageBubble: { padding: Spacing.md, borderRadius: Radius.lg },
+    messageBubble: { padding: Spacing.md, borderRadius: Radius.lg, overflow: 'hidden' },
     bubbleUser: { backgroundColor: colors.tint, borderBottomRightRadius: 4 },
-    bubbleAI: { backgroundColor: '#D1D1D6', borderBottomLeftRadius: 4 },
+    bubbleAI: { backgroundColor: colors.surfaceMuted, borderBottomLeftRadius: 4 },
     messageName: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 12,
@@ -199,7 +231,7 @@ function createStyles(colors: typeof Colors.light) {
       paddingHorizontal: Spacing.sm,
     },
     messageText: { fontFamily: 'DMSans_400Regular', fontSize: 15 },
-    messageTextUser: { color: '#FFFFFF' },
+    messageTextUser: { color: '#1C1C1E' },
     messageTextAI: { color: colors.text },
     inputRow: {
       flexDirection: 'row',
@@ -343,6 +375,58 @@ function createStyles(colors: typeof Colors.light) {
       color: colors.tint,
       textDecorationLine: 'underline',
     },
+    albumTabContainer: { flex: 1 },
+    addPhotosSection: {
+      paddingVertical: Spacing.lg,
+      paddingHorizontal: Spacing.lg,
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexShrink: 0,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.borderLight,
+    },
+    addPhotosButton: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: Spacing.xl,
+      paddingHorizontal: Spacing.xl * 2,
+      borderRadius: Radius.xl,
+      minWidth: 240,
+      overflow: 'hidden',
+    },
+    addPhotosLabel: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 18,
+      color: '#FFFFFF',
+      marginTop: Spacing.sm,
+    },
+    addPhotosButtonPressed: { opacity: 0.9 },
+    albumScrollContent: { padding: Spacing.lg, paddingBottom: 120 },
+    albumSectionTitle: {
+      fontFamily: 'Fraunces_600SemiBold',
+      fontSize: 20,
+      color: colors.text,
+      marginBottom: Spacing.sm,
+    },
+    albumSectionText: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 15,
+      color: colors.textSecondary,
+      lineHeight: 22,
+      marginBottom: Spacing.lg,
+    },
+    albumMediaGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: Spacing.sm,
+    },
+    albumMediaItem: {
+      width: 96,
+      height: 96,
+      borderRadius: Radius.md,
+      backgroundColor: colors.surfaceMuted,
+      overflow: 'hidden',
+    },
     mentionDropdown: {
       position: 'absolute',
       left: Spacing.md,
@@ -379,6 +463,7 @@ function createStyles(colors: typeof Colors.light) {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
+      minWidth: 60,
     },
     typingDot: {
       width: 6,
@@ -465,11 +550,19 @@ export default function TripDetailScreen() {
   const styles = useMemo(() => createStyles(colors), [colors]);
 
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
+  const [albumMediaByTripId, setAlbumMediaByTripId] = useState<Record<string, { uri: string; type: 'image' | 'video' }[]>>({});
+  const [viewingImageIndex, setViewingImageIndex] = useState<number | null>(null);
+  const [showJoinCodeModal, setShowJoinCodeModal] = useState(false);
+  const [joinCode, setJoinCode] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const albumMediaLoadedRef = useRef(false);
   const [message, setMessage] = useState('');
   const [mentionVisible, setMentionVisible] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [geminiTyping, setGeminiTyping] = useState(false);
   const [geminiTypingStatus, setGeminiTypingStatus] = useState('');
+  const [usersTyping, setUsersTyping] = useState<Set<string>>(new Set());
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesScrollRef = useRef<ScrollView>(null);
   const dotAnims = useRef([new RNAnimated.Value(0.3), new RNAnimated.Value(0.3), new RNAnimated.Value(0.3)]).current;
   const [messages, setMessages] = useState<ChatMessage[]>(
@@ -477,6 +570,89 @@ export default function TripDetailScreen() {
   );
   const [addedSuggestionKeys, setAddedSuggestionKeys] = useState<Set<string>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const tripIdForUploadRef = useRef<string | null>(null);
+  tripIdForUploadRef.current = id ?? null;
+
+  const flashOpacity = useSharedValue(0);
+
+  // Web: hidden file input for adding photos (expo-image-picker is native-only)
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,video/*';
+    input.multiple = true;
+    input.style.display = 'none';
+    input.onchange = async (e: Event) => {
+      const target = e.target as HTMLInputElement;
+      const files = target.files;
+      target.value = '';
+      if (!files?.length) return;
+      const tripId = tripIdForUploadRef.current;
+      if (!tripId) return;
+      const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+      if (base) {
+        try {
+          const formData = new FormData();
+          for (let i = 0; i < files.length; i++) {
+            formData.append('files', files[i], files[i].name);
+          }
+          const res = await fetch(`${base}/trips/${encodeURIComponent(tripId)}/media/upload`, {
+            method: 'POST',
+            body: formData,
+          });
+          if (res.ok) {
+            const added = (await res.json()) as { uri: string; type: string }[];
+            setAlbumMediaByTripId((prev) => ({
+              ...prev,
+              [tripId]: [
+                ...(prev[tripId] ?? []),
+                ...added.map((m) => ({
+                  uri: `${base}${m.uri}`,
+                  type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+                })),
+              ],
+            }));
+          } else {
+            const newItems = Array.from(files).map((file) => ({
+              uri: URL.createObjectURL(file),
+              type: (file.type.startsWith('video/') ? 'video' : 'image') as 'image' | 'video',
+            }));
+            setAlbumMediaByTripId((prev) => ({
+              ...prev,
+              [tripId]: [...(prev[tripId] ?? []), ...newItems],
+            }));
+          }
+        } catch (err) {
+          console.error('Upload failed:', err);
+          const newItems = Array.from(files).map((file) => ({
+            uri: URL.createObjectURL(file),
+            type: (file.type.startsWith('video/') ? 'video' : 'image') as 'image' | 'video',
+          }));
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [tripId]: [...(prev[tripId] ?? []), ...newItems],
+          }));
+        }
+      } else {
+        const newItems = Array.from(files).map((file) => ({
+          uri: URL.createObjectURL(file),
+          type: (file.type.startsWith('video/') ? 'video' : 'image') as 'image' | 'video',
+        }));
+        setAlbumMediaByTripId((prev) => ({
+          ...prev,
+          [tripId]: [...(prev[tripId] ?? []), ...newItems],
+        }));
+      }
+    };
+    document.body.appendChild(input);
+    fileInputRef.current = input;
+    return () => {
+      document.body.removeChild(input);
+      fileInputRef.current = null;
+    };
+  }, []);
 
   const userDisplayName = user ? `${user.firstName} ${user.lastName}`.trim() || 'You' : 'You';
 
@@ -651,6 +827,91 @@ export default function TripDetailScreen() {
     return list.filter((o) => o.name.toLowerCase().startsWith(f));
   }, [messages, mentionFilter]);
 
+  // Refresh album media
+  const handleRefreshMedia = async () => {
+    if (!id) return;
+    setRefreshing(true);
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+
+    if (base) {
+      try {
+        const res = await fetch(`${base}/trips/${encodeURIComponent(id)}/media`);
+        if (res.ok) {
+          const data: { uri: string; type: string }[] = await res.json();
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [id]: (data || []).map((m) => ({
+              uri: m.uri.startsWith('http') ? m.uri : `${base}${m.uri}`,
+              type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+            })),
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to refresh media:', error);
+      }
+    }
+    setRefreshing(false);
+  };
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+
+    if (base) {
+      fetch(`${base}/trips/${encodeURIComponent(id)}/media`)
+        .then((res) => (res.ok ? res.json() : []))
+        .then((data: { uri: string; type: string }[]) => {
+          if (cancelled) return;
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [id]: (data || []).map((m) => ({
+              // Convert relative paths to full URLs
+              uri: m.uri.startsWith('http') ? m.uri : `${base}${m.uri}`,
+              type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+            })),
+          }));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          AsyncStorage.getItem(ALBUM_MEDIA_STORAGE_KEY).then((raw) => {
+            if (cancelled) return;
+            try {
+              if (raw) {
+                const parsed = JSON.parse(raw) as Record<string, { uri: string; type: 'image' | 'video' }[]>;
+                setAlbumMediaByTripId((prev) => ({ ...prev, [id]: parsed[id] ?? [] }));
+              }
+            } catch (_) {}
+          });
+        })
+        .finally(() => {
+          if (!cancelled) albumMediaLoadedRef.current = true;
+        });
+      return () => {
+        cancelled = true;
+      };
+    } else {
+      AsyncStorage.getItem(ALBUM_MEDIA_STORAGE_KEY).then((raw) => {
+        if (cancelled) return;
+        try {
+          if (raw) {
+            const parsed = JSON.parse(raw) as Record<string, { uri: string; type: 'image' | 'video' }[]>;
+            setAlbumMediaByTripId((prev) => ({ ...prev, [id]: parsed[id] ?? [] }));
+          }
+        } catch (_) {}
+        albumMediaLoadedRef.current = true;
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (!albumMediaLoadedRef.current || CHAT_WS_BASE) return;
+    AsyncStorage.setItem(ALBUM_MEDIA_STORAGE_KEY, JSON.stringify(albumMediaByTripId)).catch(() => {});
+  }, [albumMediaByTripId, CHAT_WS_BASE]);
+
   useEffect(() => {
     if (!CHAT_WS_BASE || !id) return;
     // Clear messages when switching trips so we don't show another trip's chat
@@ -683,11 +944,32 @@ export default function TripDetailScreen() {
           setGeminiTypingStatus('');
         } else if (data.type === 'typing_status' && typeof data.message === 'string') {
           setGeminiTypingStatus(data.message);
+        } else if (data.type === 'typing' && data.user_name && data.user_id) {
+          // Handle typing from other users (not self, not Gemini)
+          if (data.user_id !== (user?.id ?? '')) {
+            setUsersTyping((prev) => new Set(prev).add(data.user_id));
+            // Clear typing indicator after 3 seconds
+            setTimeout(() => {
+              setUsersTyping((prev) => {
+                const next = new Set(prev);
+                next.delete(data.user_id);
+                return next;
+              });
+            }, 3000);
+          }
         } else if (data.type === 'message' && data.message) {
           const m = data.message;
           if (m.user_name === 'Gemini') {
             setGeminiTyping(false);
             setGeminiTypingStatus('');
+          }
+          // Clear typing indicator for this user
+          if (m.user_id) {
+            setUsersTyping((prev) => {
+              const next = new Set(prev);
+              next.delete(m.user_id);
+              return next;
+            });
           }
           setMessages((prev) => [
             ...prev,
@@ -744,6 +1026,32 @@ export default function TripDetailScreen() {
 
   const handleMessageChange = (text: string) => {
     setMessage(text);
+    
+    // Send typing indicator
+    if (text.length > 0 && CHAT_WS_BASE && wsRef.current?.readyState === WebSocket.OPEN) {
+      // Clear existing timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      
+      // Send typing event
+      wsRef.current.send(JSON.stringify({ 
+        type: 'typing',
+        user_id: user?.id ?? '',
+        user_name: userDisplayName,
+      }));
+      
+      // Stop sending typing after 2 seconds of no typing
+      typingTimeoutRef.current = setTimeout(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ 
+            type: 'stop_typing',
+            user_id: user?.id ?? '',
+          }));
+        }
+      }, 2000);
+    }
+    
     const lastAt = text.lastIndexOf('@');
     if (lastAt === -1) {
       setMentionVisible(false);
@@ -794,6 +1102,135 @@ export default function TripDetailScreen() {
     }
   };
 
+  const handleAddPictures = async () => {
+    if (!id) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (Platform.OS === 'web') {
+      fileInputRef.current?.click();
+      return;
+    }
+    const ImagePicker = require('expo-image-picker');
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') return;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      allowsMultipleSelection: true,
+      quality: 0.8,
+    });
+    if (result.canceled) return;
+
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+    if (base) {
+      try {
+        const formData = new FormData();
+        for (const asset of result.assets) {
+          const uri = asset.uri;
+          const filename = uri.split('/').pop() || 'image.jpg';
+          const match = /\.(\w+)$/.exec(filename);
+          const type = match ? `image/${match[1]}` : 'image/jpeg';
+
+          // @ts-ignore - FormData in React Native accepts uri
+          formData.append('files', {
+            uri,
+            name: filename,
+            type,
+          });
+        }
+
+        const res = await fetch(`${base}/trips/${encodeURIComponent(id)}/media/upload`, {
+          method: 'POST',
+          body: formData,
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        });
+
+        if (res.ok) {
+          const added = (await res.json()) as { uri: string; type: string }[];
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [id]: [
+              ...(prev[id] ?? []),
+              ...added.map((m) => ({
+                uri: `${base}${m.uri}`,
+                type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+              })),
+            ],
+          }));
+        } else {
+          const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
+            uri: a.uri,
+            type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+          }));
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [id]: [...(prev[id] ?? []), ...newItems],
+          }));
+        }
+      } catch (err) {
+        console.error('Upload failed:', err);
+        const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
+          uri: a.uri,
+          type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+        }));
+        setAlbumMediaByTripId((prev) => ({
+          ...prev,
+          [id]: [...(prev[id] ?? []), ...newItems],
+        }));
+      }
+    } else {
+      const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
+        uri: a.uri,
+        type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+      }));
+      setAlbumMediaByTripId((prev) => ({
+        ...prev,
+        [id]: [...(prev[id] ?? []), ...newItems],
+      }));
+    }
+  };
+
+  // Fetch join code for trip
+  const fetchJoinCode = async () => {
+    if (!id) return;
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+    if (!base) return;
+    try {
+      const res = await fetch(`${base}/register-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trip_id: id }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setJoinCode(data.code ?? null);
+      }
+    } catch (error) {
+      console.error('Failed to fetch join code:', error);
+    }
+  };
+
+  const handleCopyCode = async () => {
+    if (!joinCode) return;
+    await Clipboard.setStringAsync(joinCode);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    flashOpacity.value = withSequence(
+      withTiming(1, { duration: 100 }),
+      withTiming(0, { duration: 400 })
+    );
+  };
+
+  const flashStyle = useAnimatedStyle(() => ({
+    opacity: flashOpacity.value,
+  }));
+
+  // Fetch join code when modal opens
+  useEffect(() => {
+    if (showJoinCodeModal && !joinCode) {
+      fetchJoinCode();
+    }
+  }, [showJoinCodeModal]);
+
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: 10 + insets.top }]}>
@@ -821,12 +1258,12 @@ export default function TripDetailScreen() {
           style={styles.settingsBtn}
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.push(`/trip/${id}/settings`);
+            setShowJoinCodeModal(true);
           }}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           accessibilityRole="button"
-          accessibilityLabel="Trip settings">
-          <IconSymbol name="gearshape" size={22} color="#FFFFFF" />
+          accessibilityLabel="Show join code">
+          <IconSymbol name="plus" size={24} color="#FFFFFF" />
         </Pressable>
       </View>
 
@@ -859,14 +1296,18 @@ export default function TripDetailScreen() {
       {activeTab === 'Chat' && (
         <KeyboardAvoidingView
           style={styles.chatContainer}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={0}>
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}>
           <ScrollView
             ref={messagesScrollRef}
             style={styles.messagesScroll}
             contentContainerStyle={styles.messagesContent}
             showsVerticalScrollIndicator={false}
             keyboardDismissMode="on-drag"
+            onContentSizeChange={() => {
+              // Auto-scroll to bottom when content changes (new message, keyboard opens, etc)
+              messagesScrollRef.current?.scrollToEnd({ animated: true });
+            }}
           >
             {(() => {
               const currentUserId = user?.id ?? '';
@@ -906,6 +1347,9 @@ export default function TripDetailScreen() {
                     }
                     const { msg, showName, groupedWithNext } = item;
                     const fromMe = isFromMe(msg);
+                    const isGemini = msg.name === 'Gemini' || msg.isAI;
+                    const userColor = fromMe ? null : getUserColor(msg.user_id, msg.name);
+                    
                     return (
                       <Animated.View
                         key={msg.id}
@@ -929,78 +1373,100 @@ export default function TripDetailScreen() {
                               {msg.name}
                             </Text>
                           )}
-                          <View
-                            style={[
-                              styles.messageBubble,
-                              fromMe ? styles.bubbleUser : styles.bubbleAI,
-                            ]}>
-                            <MarkdownText
-                              baseStyle={StyleSheet.flatten([
-                                styles.messageText,
-                                fromMe ? styles.messageTextUser : styles.messageTextAI,
-                              ])}
-                              codeStyle={
-                                fromMe
-                                  ? { backgroundColor: 'rgba(255,255,255,0.25)' }
-                                  : undefined
-                              }
-                            >
-                              {msg.content}
-                            </MarkdownText>
-                            {!fromMe && msg.suggestions && msg.suggestions.length > 0 && (
-                              <View style={styles.suggestionList}>
-                                {msg.suggestions.map((opt, idx) => {
-                                  const suggestionKey = `${msg.id}-${idx}`;
-                                  const added = addedSuggestionKeys.has(suggestionKey);
-                                  return (
-                                    <View
-                                      key={suggestionKey}
-                                      style={[
-                                        styles.suggestionRow,
-                                        added && styles.suggestionAdded,
-                                      ]}>
-                                      <IconSymbol
-                                        name="checkmark"
-                                        size={18}
-                                        color={colors.tint}
-                                        style={styles.suggestionCheck}
-                                      />
-                                      <View style={styles.suggestionTextWrap}>
-                                        {(opt.dayLabel || opt.time) && (
-                                          <Text style={styles.suggestionSlot} numberOfLines={1}>
-                                            {[opt.dayLabel, opt.time].filter(Boolean).join(' · ')}
-                                          </Text>
-                                        )}
-                                        <Text style={styles.suggestionTitle}>{opt.title}</Text>
-                                        {opt.description ? (
-                                          <Text style={styles.suggestionDesc} numberOfLines={2}>
-                                            {opt.description}
-                                          </Text>
-                                        ) : null}
-                                      </View>
-                                      <Pressable
-                                        onPress={() =>
-                                          addSuggestionToPlan(msg.id, idx, opt)
-                                        }
-                                        disabled={added}
-                                        style={({ pressed }) => [
-                                          styles.addToPlanBtn,
-                                          (pressed || added) && { opacity: 0.8 },
+                          <View style={{ position: 'relative' }}>
+                            <View
+                              style={[
+                                styles.messageBubble,
+                                fromMe 
+                                  ? styles.bubbleUser 
+                                  : {
+                                      backgroundColor: userColor?.bg,
+                                      borderBottomLeftRadius: 4,
+                                    },
+                                isGemini && { marginBottom: 3 },
+                              ]}>
+                              <MarkdownText
+                                baseStyle={StyleSheet.flatten([
+                                  styles.messageText,
+                                  fromMe 
+                                    ? styles.messageTextUser 
+                                    : { color: userColor?.text || colors.text },
+                                ])}
+                                codeStyle={
+                                  fromMe
+                                    ? { backgroundColor: 'rgba(0,0,0,0.15)' }
+                                    : { backgroundColor: 'rgba(0,0,0,0.1)' }
+                                }
+                              >
+                                {msg.content}
+                              </MarkdownText>
+                              {!fromMe && msg.suggestions && msg.suggestions.length > 0 && (
+                                <View style={styles.suggestionList}>
+                                  {msg.suggestions.map((opt, idx) => {
+                                    const suggestionKey = `${msg.id}-${idx}`;
+                                    const added = addedSuggestionKeys.has(suggestionKey);
+                                    return (
+                                      <View
+                                        key={suggestionKey}
+                                        style={[
+                                          styles.suggestionRow,
+                                          added && styles.suggestionAdded,
                                         ]}>
-                                        <Text style={styles.addToPlanBtnText}>
-                                          {added
-                                            ? opt.replaceActivityId || opt.replaceTitle
-                                              ? 'Replaced'
-                                              : 'Added'
-                                            : opt.replaceActivityId || opt.replaceTitle
-                                              ? 'Replace with this'
-                                              : 'Add to plan'}
-                                        </Text>
-                                      </Pressable>
-                                    </View>
-                                  );
-                                })}
-                              </View>
+                                        <IconSymbol
+                                          name="checkmark"
+                                          size={18}
+                                          color={colors.tint}
+                                          style={styles.suggestionCheck}
+                                        />
+                                        <View style={styles.suggestionTextWrap}>
+                                          {(opt.dayLabel || opt.time) && (
+                                            <Text style={styles.suggestionSlot} numberOfLines={1}>
+                                              {[opt.dayLabel, opt.time].filter(Boolean).join(' · ')}
+                                            </Text>
+                                          )}
+                                          <Text style={styles.suggestionTitle}>{opt.title}</Text>
+                                          {opt.description ? (
+                                            <Text style={styles.suggestionDesc} numberOfLines={2}>
+                                              {opt.description}
+                                            </Text>
+                                          ) : null}
+                                        </View>
+                                        <Pressable
+                                          onPress={() =>
+                                            addSuggestionToPlan(msg.id, idx, opt)
+                                          }
+                                          disabled={added}
+                                          style={({ pressed }) => [
+                                            styles.addToPlanBtn,
+                                            (pressed || added) && { opacity: 0.8 },
+                                          ]}>
+                                          <Text style={styles.addToPlanBtnText}>
+                                            {added
+                                              ? opt.replaceActivityId || opt.replaceTitle
+                                                ? 'Replaced'
+                                                : 'Added'
+                                              : opt.replaceActivityId || opt.replaceTitle
+                                                ? 'Replace with this'
+                                                : 'Add to plan'}
+                                          </Text>
+                                        </Pressable>
+                                      </View>
+                                    );
+                                  })}
+                                </View>
+                              )}
+                            </View>
+                            {isGemini && (
+                              <LinearGradient
+                                colors={['#FF6B6B', '#FFD93D', '#6BCF7F', '#4D96FF', '#9D4EDD', '#FF6B6B']}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 0 }}
+                                style={{
+                                  height: 3,
+                                  borderBottomLeftRadius: Radius.lg,
+                                  borderBottomRightRadius: Radius.lg,
+                                }}
+                              />
                             )}
                           </View>
                         </View>
@@ -1011,22 +1477,70 @@ export default function TripDetailScreen() {
                     <View style={[styles.messageRow, styles.messageRowAI]}>
                       <View style={[styles.messageBubbleWrapper, styles.messageBubbleWrapperAI]}>
                         <Text style={[styles.messageName, styles.messageNameLeft]}>Gemini</Text>
-                        <View style={[styles.messageBubble, styles.bubbleAI, styles.typingBubble]}>
-                          <View style={styles.typingDotsRow}>
-                            {[0, 1, 2].map((i) => (
-                              <RNAnimated.View
-                                key={i}
-                                style={[styles.typingDot, { opacity: dotAnims[i] }]}
-                              />
-                            ))}
+                        <View style={{ position: 'relative' }}>
+                          <View
+                            style={[
+                              styles.messageBubble,
+                              {
+                                backgroundColor: getUserColor('gemini', 'Gemini').bg,
+                                borderBottomLeftRadius: 4,
+                                marginBottom: 3,
+                              },
+                              styles.typingBubble,
+                            ]}>
+                            <View style={styles.typingDotsRow}>
+                              {[0, 1, 2].map((i) => (
+                                <RNAnimated.View
+                                  key={i}
+                                  style={[styles.typingDot, { opacity: dotAnims[i] }]}
+                                />
+                              ))}
+                            </View>
+                            {geminiTypingStatus ? (
+                              <Text style={styles.typingStatusText}>{geminiTypingStatus}</Text>
+                            ) : null}
                           </View>
-                          {geminiTypingStatus ? (
-                            <Text style={styles.typingStatusText}>{geminiTypingStatus}</Text>
-                          ) : null}
+                          <LinearGradient
+                            colors={['#FF6B6B', '#FFD93D', '#6BCF7F', '#4D96FF', '#9D4EDD', '#FF6B6B']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={{
+                              height: 3,
+                              borderBottomLeftRadius: Radius.lg,
+                              borderBottomRightRadius: Radius.lg,
+                            }}
+                          />
                         </View>
                       </View>
                     </View>
                   )}
+                  {Array.from(usersTyping).map((userId) => {
+                    const typingUser = messages.find((m) => m.user_id === userId);
+                    if (!typingUser) return null;
+                    const userColor = getUserColor(userId, typingUser.name);
+                    return (
+                      <View key={userId} style={[styles.messageRow, styles.messageRowAI]}>
+                        <View style={[styles.messageBubbleWrapper, styles.messageBubbleWrapperAI]}>
+                          <Text style={[styles.messageName, styles.messageNameLeft]}>
+                            {typingUser.name}
+                          </Text>
+                          <View
+                            style={[
+                              styles.messageBubble,
+                              {
+                                backgroundColor: userColor.bg,
+                                borderBottomLeftRadius: 4,
+                              },
+                              styles.typingBubble,
+                            ]}>
+                            <View style={styles.typingDot} />
+                            <View style={styles.typingDot} />
+                            <View style={styles.typingDot} />
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })}
                 </>
               );
             })()}
@@ -1064,6 +1578,12 @@ export default function TripDetailScreen() {
               placeholderTextColor={colors.textTertiary}
               value={message}
               onChangeText={handleMessageChange}
+              onFocus={() => {
+                // Scroll to bottom when input is focused
+                setTimeout(() => {
+                  messagesScrollRef.current?.scrollToEnd({ animated: true });
+                }, 100);
+              }}
               multiline
               maxLength={500}
               onKeyPress={(e) => {
@@ -1192,19 +1712,217 @@ export default function TripDetailScreen() {
       )}
 
       {activeTab === 'Album' && (
-        <ScrollView
-          style={styles.tabContent}
-          contentContainerStyle={styles.tabContentInner}
-          showsVerticalScrollIndicator={false}>
-          <Animated.View entering={FadeInDown.springify()}>
-            <Text style={styles.placeholderTitle}>Shared photos</Text>
-            <Text style={styles.placeholderText}>
-              Photos from your trip will appear here. Share memories with your
-              group!
+        <View style={styles.albumTabContainer}>
+          <View style={styles.addPhotosSection}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.addPhotosButton,
+                pressed && styles.addPhotosButtonPressed,
+              ]}
+              onPress={handleAddPictures}
+              accessibilityRole="button"
+              accessibilityLabel="Add photos and videos to trip album">
+              <LinearGradient
+                colors={['#E8A68A', '#C45C3E']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
+              <IconSymbol name="photo.on.rectangle.angled" size={40} color="#FFFFFF" />
+              <Text style={styles.addPhotosLabel}>Add photos & videos</Text>
+            </Pressable>
+          </View>
+          <ScrollView
+            style={styles.tabContent}
+            contentContainerStyle={styles.albumScrollContent}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefreshMedia}
+                tintColor={colors.accent}
+                colors={[colors.accent]}
+              />
+            }>
+            <Text style={styles.albumSectionTitle}>Shared photos & videos</Text>
+            <Text style={styles.albumSectionText}>
+              {(() => {
+                const media = albumMediaByTripId[id ?? ''] ?? [];
+                return media.length > 0
+                  ? `This trip has its own album. ${media.length} item${media.length !== 1 ? 's' : ''} in this shared space. Media is not shared with other trips.`
+                  : 'Add photos and videos above. They stay in this trip only—no sharing between trips.';
+              })()}
             </Text>
-          </Animated.View>
-        </ScrollView>
+            {(() => {
+              const media = albumMediaByTripId[id ?? ''] ?? [];
+              const imageItems = media.filter((m): m is { uri: string; type: 'image' } => m.type === 'image');
+              if (media.length === 0) return null;
+              let imageIndex = 0;
+              return (
+                <View style={styles.albumMediaGrid}>
+                  {media.map((item, index) => (
+                    <View key={`${item.uri}-${index}`} style={styles.albumMediaItem}>
+                      {item.type === 'image' ? (() => {
+                          const idx = imageIndex++;
+                          return (
+                            <Pressable
+                              style={{ width: 96, height: 96 }}
+                              onPress={() => {
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                setViewingImageIndex(idx);
+                              }}>
+                              <Image source={{ uri: item.uri }} style={{ width: 96, height: 96 }} contentFit="cover" />
+                            </Pressable>
+                          );
+                        })() : (
+                        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                          <Text style={styles.albumSectionText}>Video</Text>
+                        </View>
+                      )}
+                    </View>
+                  ))}
+                </View>
+              );
+            })()}
+          </ScrollView>
+        </View>
       )}
+
+      <Modal
+        visible={viewingImageIndex !== null}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setViewingImageIndex(null)}>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+          <ImageViewerOverlay
+            imageUris={(() => {
+              const media = albumMediaByTripId[id ?? ''] ?? [];
+              return media.filter((m): m is { uri: string; type: 'image' } => m.type === 'image').map((m) => m.uri);
+            })()}
+            initialPage={viewingImageIndex ?? 0}
+            onClose={() => setViewingImageIndex(null)}
+          />
+        </GestureHandlerRootView>
+      </Modal>
+
+      <Modal
+        visible={showJoinCodeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowJoinCodeModal(false)}>
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+          onPress={() => setShowJoinCodeModal(false)}>
+          <Pressable
+            style={{
+              backgroundColor: colors.surface,
+              borderRadius: Radius.lg,
+              padding: Spacing.xl,
+              width: '80%',
+              maxWidth: 400,
+              alignItems: 'center',
+            }}
+            onPress={(e) => e.stopPropagation()}>
+            <Text
+              style={{
+                fontFamily: 'Fraunces_600SemiBold',
+                fontSize: 22,
+                color: colors.text,
+                marginBottom: Spacing.sm,
+              }}>
+              Invite to Trip
+            </Text>
+            <Text
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 15,
+                color: colors.textSecondary,
+                textAlign: 'center',
+                marginBottom: Spacing.lg,
+              }}>
+              Share this code with others to join this trip
+            </Text>
+            <Pressable
+              onPress={handleCopyCode}
+              disabled={!joinCode}
+              style={({ pressed }) => ({
+                backgroundColor: pressed ? colors.surfaceMuted : colors.backgroundElevated,
+                borderRadius: Radius.md,
+                padding: Spacing.lg,
+                width: '100%',
+                alignItems: 'center',
+                marginBottom: Spacing.md,
+                overflow: 'hidden',
+              })}>
+              {joinCode ? (
+                <>
+                  <Text
+                    style={{
+                      fontFamily: 'DMSans_700Bold',
+                      fontSize: 36,
+                      color: colors.tint,
+                      letterSpacing: 8,
+                    }}>
+                    {joinCode}
+                  </Text>
+                  <Animated.View
+                    style={[
+                      StyleSheet.absoluteFill,
+                      {
+                        backgroundColor: '#4ade80',
+                        borderRadius: Radius.md,
+                      },
+                      flashStyle,
+                    ]}
+                    pointerEvents="none"
+                  />
+                </>
+              ) : (
+                <Text
+                  style={{
+                    fontFamily: 'DMSans_400Regular',
+                    fontSize: 16,
+                    color: colors.textSecondary,
+                  }}>
+                  Loading...
+                </Text>
+              )}
+            </Pressable>
+            <Text
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 13,
+                color: colors.textTertiary,
+                textAlign: 'center',
+              }}>
+              {joinCode ? 'Tap the code to copy' : ''}
+            </Text>
+            <Pressable
+              onPress={() => setShowJoinCodeModal(false)}
+              style={({ pressed }) => ({
+                marginTop: Spacing.lg,
+                paddingVertical: Spacing.sm,
+                paddingHorizontal: Spacing.md,
+                opacity: pressed ? 0.6 : 1,
+              })}>
+              <Text
+                style={{
+                  fontFamily: 'DMSans_600SemiBold',
+                  fontSize: 16,
+                  color: colors.accent,
+                }}>
+                Close
+              </Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }

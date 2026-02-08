@@ -116,6 +116,13 @@ export function TripsProvider({ children }: { children: React.ReactNode }) {
     refetchTrips();
   }, [refetchTrips]);
 
+  // Save trips to AsyncStorage whenever they change (for offline access)
+  useEffect(() => {
+    AsyncStorage.setItem('@goingplaces_trips', JSON.stringify(trips)).catch((e) => {
+      console.error('Failed to save trips to storage:', e);
+    });
+  }, [trips]);
+
   const addTrip = useCallback((trip: Omit<Trip, 'id' | 'createdAt'>) => {
     const id = `trip_${tripIdCounter++}`;
     const now = Date.now();
