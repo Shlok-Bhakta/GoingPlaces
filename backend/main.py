@@ -568,6 +568,26 @@ async def websocket_chat(
                 await websocket.send_json({"type": "error", "message": "Invalid JSON"})
                 continue
 
+            # Handle typing indicator events
+            msg_type = msg.get("type", "")
+            if msg_type == "typing":
+                # Broadcast typing indicator to others in the room
+                typing_payload = {
+                    "type": "typing",
+                    "user_id": msg.get("user_id", ""),
+                    "user_name": msg.get("user_name", "Unknown"),
+                }
+                for ws in room:
+                    if ws != websocket:  # Don't send back to sender
+                        try:
+                            await ws.send_json(typing_payload)
+                        except Exception:
+                            pass
+                continue
+            elif msg_type == "stop_typing":
+                # Could broadcast stop_typing, but we handle timeout on frontend
+                continue
+
             content = (msg.get("content") or "").strip()
             if not content:
                 continue

@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
@@ -20,7 +21,7 @@ import {
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import PagerView from 'react-native-pager-view';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -37,6 +38,29 @@ type ChatMessage = { id: string; content: string; isAI: boolean; name: string; u
 
 const GROUP_GAP_MS = 5 * 60 * 1000; // 5 min
 const DIVIDER_GAP_MS = 30 * 60 * 1000; // 30 min
+
+// Color palette for chat bubbles (warm, pastel, accessible)
+const USER_COLORS = [
+  { bg: '#9FAEC0', text: '#1C1C1E' },     // Deeper blue-gray
+  { bg: '#BFAD9F', text: '#1C1C1E' },     // Deeper warm beige
+  { bg: '#A8BFB0', text: '#1C1C1E' },     // Deeper sage green
+  { bg: '#BFA8BD', text: '#1C1C1E' },     // Deeper lavender
+  { bg: '#A0B8BF', text: '#1C1C1E' },     // Deeper sky blue
+  { bg: '#BFBCA0', text: '#1C1C1E' },     // Deeper sand
+  { bg: '#B0A8BF', text: '#1C1C1E' },     // Deeper periwinkle
+  { bg: '#BFA8B0', text: '#1C1C1E' },     // Deeper dusty rose
+];
+
+// Assign color to user based on their ID/name
+function getUserColor(userId: string | undefined, userName: string): { bg: string; text: string } {
+  const key = userId || userName;
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return USER_COLORS[Math.abs(hash) % USER_COLORS.length];
+}
 
 function formatDividerLabel(iso: string, prevIso?: string): string {
   const d = new Date(iso);
@@ -162,9 +186,8 @@ function createStyles(colors: typeof Colors.light) {
     messageBubbleWrapper: { maxWidth: '85%' },
     messageBubbleWrapperAI: { alignItems: 'flex-start' },
     messageBubbleWrapperUser: { alignItems: 'flex-end' },
-    messageBubble: { padding: Spacing.md, borderRadius: Radius.lg },
+    messageBubble: { padding: Spacing.md, borderRadius: Radius.lg, overflow: 'hidden' },
     bubbleUser: { backgroundColor: colors.tint, borderBottomRightRadius: 4 },
-    bubbleAI: { backgroundColor: '#D1D1D6', borderBottomLeftRadius: 4 },
     messageName: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 12,
@@ -186,7 +209,7 @@ function createStyles(colors: typeof Colors.light) {
       paddingHorizontal: Spacing.sm,
     },
     messageText: { fontFamily: 'DMSans_400Regular', fontSize: 15 },
-    messageTextUser: { color: '#FFFFFF' },
+    messageTextUser: { color: '#1C1C1E' },
     messageTextAI: { color: colors.text },
     inputRow: {
       flexDirection: 'row',
@@ -394,11 +417,10 @@ function createStyles(colors: typeof Colors.light) {
       color: colors.text,
     },
     typingBubble: {
-      paddingVertical: Spacing.sm,
-      paddingHorizontal: Spacing.md,
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
+      minWidth: 60,
     },
     typingDot: {
       width: 6,
@@ -506,17 +528,23 @@ export default function TripDetailScreen() {
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
   const [albumMediaByTripId, setAlbumMediaByTripId] = useState<Record<string, { uri: string; type: 'image' | 'video' }[]>>({});
   const [viewingImageIndex, setViewingImageIndex] = useState<number | null>(null);
+  const [showJoinCodeModal, setShowJoinCodeModal] = useState(false);
+  const [joinCode, setJoinCode] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const albumMediaLoadedRef = useRef(false);
   const [message, setMessage] = useState('');
   const [mentionVisible, setMentionVisible] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [geminiTyping, setGeminiTyping] = useState(false);
+  const [usersTyping, setUsersTyping] = useState<Set<string>>(new Set());
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const messagesScrollRef = useRef<ScrollView>(null);
   const [messages, setMessages] = useState<ChatMessage[]>(
     CHAT_WS_BASE ? [] : FALLBACK_MESSAGES
   );
   const wsRef = useRef<WebSocket | null>(null);
+
+  const flashOpacity = useSharedValue(0);
 
   const userDisplayName = user ? `${user.firstName} ${user.lastName}`.trim() || 'You' : 'You';
 
@@ -656,9 +684,30 @@ export default function TripDetailScreen() {
           }
         } else if (data.type === 'typing' && data.user_name === 'Gemini') {
           setGeminiTyping(true);
+        } else if (data.type === 'typing' && data.user_name && data.user_id) {
+          // Handle typing from other users (not self, not Gemini)
+          if (data.user_id !== (user?.id ?? '')) {
+            setUsersTyping((prev) => new Set(prev).add(data.user_id));
+            // Clear typing indicator after 3 seconds
+            setTimeout(() => {
+              setUsersTyping((prev) => {
+                const next = new Set(prev);
+                next.delete(data.user_id);
+                return next;
+              });
+            }, 3000);
+          }
         } else if (data.type === 'message' && data.message) {
           const m = data.message;
           if (m.user_name === 'Gemini') setGeminiTyping(false);
+          // Clear typing indicator for this user
+          if (m.user_id) {
+            setUsersTyping((prev) => {
+              const next = new Set(prev);
+              next.delete(m.user_id);
+              return next;
+            });
+          }
           setMessages((prev) => [
             ...prev,
             { id: String(m.id), content: m.content, isAI: m.is_ai, name: m.user_name || 'Unknown', user_id: m.user_id ?? '', timestamp: m.created_at || new Date().toISOString() },
@@ -705,6 +754,32 @@ export default function TripDetailScreen() {
 
   const handleMessageChange = (text: string) => {
     setMessage(text);
+    
+    // Send typing indicator
+    if (text.length > 0 && CHAT_WS_BASE && wsRef.current?.readyState === WebSocket.OPEN) {
+      // Clear existing timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      
+      // Send typing event
+      wsRef.current.send(JSON.stringify({ 
+        type: 'typing',
+        user_id: user?.id ?? '',
+        user_name: userDisplayName,
+      }));
+      
+      // Stop sending typing after 2 seconds of no typing
+      typingTimeoutRef.current = setTimeout(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ 
+            type: 'stop_typing',
+            user_id: user?.id ?? '',
+          }));
+        }
+      }, 2000);
+    }
+    
     const lastAt = text.lastIndexOf('@');
     if (lastAt === -1) {
       setMentionVisible(false);
@@ -843,6 +918,47 @@ export default function TripDetailScreen() {
     }
   };
 
+  // Fetch join code for trip
+  const fetchJoinCode = async () => {
+    if (!id) return;
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+    if (!base) return;
+    try {
+      const res = await fetch(`${base}/register-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trip_id: id }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setJoinCode(data.code ?? null);
+      }
+    } catch (error) {
+      console.error('Failed to fetch join code:', error);
+    }
+  };
+
+  const handleCopyCode = async () => {
+    if (!joinCode) return;
+    await Clipboard.setStringAsync(joinCode);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    flashOpacity.value = withSequence(
+      withTiming(1, { duration: 100 }),
+      withTiming(0, { duration: 400 })
+    );
+  };
+
+  const flashStyle = useAnimatedStyle(() => ({
+    opacity: flashOpacity.value,
+  }));
+
+  // Fetch join code when modal opens
+  useEffect(() => {
+    if (showJoinCodeModal && !joinCode) {
+      fetchJoinCode();
+    }
+  }, [showJoinCodeModal]);
+
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: 10 + insets.top }]}>
@@ -870,12 +986,12 @@ export default function TripDetailScreen() {
           style={styles.settingsBtn}
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.push(`/trip/${id}/settings`);
+            setShowJoinCodeModal(true);
           }}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           accessibilityRole="button"
-          accessibilityLabel="Trip settings">
-          <IconSymbol name="gearshape" size={22} color="#FFFFFF" />
+          accessibilityLabel="Show join code">
+          <IconSymbol name="plus" size={24} color="#FFFFFF" />
         </Pressable>
       </View>
 
@@ -908,14 +1024,18 @@ export default function TripDetailScreen() {
       {activeTab === 'Chat' && (
         <KeyboardAvoidingView
           style={styles.chatContainer}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={0}>
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
           <ScrollView
             ref={messagesScrollRef}
             style={styles.messagesScroll}
             contentContainerStyle={styles.messagesContent}
             showsVerticalScrollIndicator={false}
             keyboardDismissMode="on-drag"
+            onContentSizeChange={() => {
+              // Auto-scroll to bottom when content changes (new message, keyboard opens, etc)
+              messagesScrollRef.current?.scrollToEnd({ animated: true });
+            }}
           >
             {(() => {
               const currentUserId = user?.id ?? '';
@@ -955,6 +1075,9 @@ export default function TripDetailScreen() {
                     }
                     const { msg, showName, groupedWithNext } = item;
                     const fromMe = isFromMe(msg);
+                    const isGemini = msg.name === 'Gemini' || msg.isAI;
+                    const userColor = fromMe ? null : getUserColor(msg.user_id, msg.name);
+                    
                     return (
                       <Animated.View
                         key={msg.id}
@@ -978,41 +1101,111 @@ export default function TripDetailScreen() {
                               {msg.name}
                             </Text>
                           )}
-                          <View
-                            style={[
-                              styles.messageBubble,
-                              fromMe ? styles.bubbleUser : styles.bubbleAI,
-                            ]}>
-                            <MarkdownText
-                              baseStyle={StyleSheet.flatten([
-                                styles.messageText,
-                                fromMe ? styles.messageTextUser : styles.messageTextAI,
-                              ])}
-                              codeStyle={
-                                fromMe
-                                  ? { backgroundColor: 'rgba(255,255,255,0.25)' }
-                                  : undefined
-                              }
-                            >
-                              {msg.content}
-                            </MarkdownText>
+                          <View style={{ position: 'relative' }}>
+                            <View
+                              style={[
+                                styles.messageBubble,
+                                fromMe 
+                                  ? styles.bubbleUser 
+                                  : {
+                                      backgroundColor: userColor?.bg,
+                                      borderBottomLeftRadius: 4,
+                                    },
+                                isGemini && { marginBottom: 3 },
+                              ]}>
+                              <MarkdownText
+                                baseStyle={StyleSheet.flatten([
+                                  styles.messageText,
+                                  fromMe 
+                                    ? styles.messageTextUser 
+                                    : { color: userColor?.text || colors.text },
+                                ])}
+                                codeStyle={
+                                  fromMe
+                                    ? { backgroundColor: 'rgba(0,0,0,0.15)' }
+                                    : { backgroundColor: 'rgba(0,0,0,0.1)' }
+                                }
+                              >
+                                {msg.content}
+                              </MarkdownText>
+                            </View>
+                            {isGemini && (
+                              <LinearGradient
+                                colors={['#FF6B6B', '#FFD93D', '#6BCF7F', '#4D96FF', '#9D4EDD', '#FF6B6B']}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 0 }}
+                                style={{
+                                  height: 3,
+                                  borderBottomLeftRadius: Radius.lg,
+                                  borderBottomRightRadius: Radius.lg,
+                                }}
+                              />
+                            )}
                           </View>
                         </View>
                       </Animated.View>
                     );
-                  })}
+                  }                  )}
                   {geminiTyping && (
                     <View style={[styles.messageRow, styles.messageRowAI]}>
                       <View style={[styles.messageBubbleWrapper, styles.messageBubbleWrapperAI]}>
                         <Text style={[styles.messageName, styles.messageNameLeft]}>Gemini</Text>
-                        <View style={[styles.messageBubble, styles.bubbleAI, styles.typingBubble]}>
-                          <View style={styles.typingDot} />
-                          <View style={styles.typingDot} />
-                          <View style={styles.typingDot} />
+                        <View style={{ position: 'relative' }}>
+                          <View
+                            style={[
+                              styles.messageBubble,
+                              {
+                                backgroundColor: getUserColor('gemini', 'Gemini').bg,
+                                borderBottomLeftRadius: 4,
+                                marginBottom: 3,
+                              },
+                              styles.typingBubble,
+                            ]}>
+                            <View style={styles.typingDot} />
+                            <View style={styles.typingDot} />
+                            <View style={styles.typingDot} />
+                          </View>
+                          <LinearGradient
+                            colors={['#FF6B6B', '#FFD93D', '#6BCF7F', '#4D96FF', '#9D4EDD', '#FF6B6B']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={{
+                              height: 3,
+                              borderBottomLeftRadius: Radius.lg,
+                              borderBottomRightRadius: Radius.lg,
+                            }}
+                          />
                         </View>
                       </View>
                     </View>
                   )}
+                  {Array.from(usersTyping).map((userId) => {
+                    const typingUser = messages.find((m) => m.user_id === userId);
+                    if (!typingUser) return null;
+                    const userColor = getUserColor(userId, typingUser.name);
+                    return (
+                      <View key={userId} style={[styles.messageRow, styles.messageRowAI]}>
+                        <View style={[styles.messageBubbleWrapper, styles.messageBubbleWrapperAI]}>
+                          <Text style={[styles.messageName, styles.messageNameLeft]}>
+                            {typingUser.name}
+                          </Text>
+                          <View
+                            style={[
+                              styles.messageBubble,
+                              {
+                                backgroundColor: userColor.bg,
+                                borderBottomLeftRadius: 4,
+                              },
+                              styles.typingBubble,
+                            ]}>
+                            <View style={styles.typingDot} />
+                            <View style={styles.typingDot} />
+                            <View style={styles.typingDot} />
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })}
                 </>
               );
             })()}
@@ -1050,6 +1243,12 @@ export default function TripDetailScreen() {
               placeholderTextColor={colors.textTertiary}
               value={message}
               onChangeText={handleMessageChange}
+              onFocus={() => {
+                // Scroll to bottom when input is focused
+                setTimeout(() => {
+                  messagesScrollRef.current?.scrollToEnd({ animated: true });
+                }, 100);
+              }}
               multiline
               maxLength={500}
               onKeyPress={(e) => {
@@ -1247,6 +1446,124 @@ export default function TripDetailScreen() {
             onClose={() => setViewingImageIndex(null)}
           />
         </GestureHandlerRootView>
+      </Modal>
+
+      <Modal
+        visible={showJoinCodeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowJoinCodeModal(false)}>
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+          onPress={() => setShowJoinCodeModal(false)}>
+          <Pressable
+            style={{
+              backgroundColor: colors.surface,
+              borderRadius: Radius.lg,
+              padding: Spacing.xl,
+              width: '80%',
+              maxWidth: 400,
+              alignItems: 'center',
+            }}
+            onPress={(e) => e.stopPropagation()}>
+            <Text
+              style={{
+                fontFamily: 'Fraunces_600SemiBold',
+                fontSize: 22,
+                color: colors.text,
+                marginBottom: Spacing.sm,
+              }}>
+              Invite to Trip
+            </Text>
+            <Text
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 15,
+                color: colors.textSecondary,
+                textAlign: 'center',
+                marginBottom: Spacing.lg,
+              }}>
+              Share this code with others to join this trip
+            </Text>
+            <Pressable
+              onPress={handleCopyCode}
+              disabled={!joinCode}
+              style={({ pressed }) => ({
+                backgroundColor: pressed ? colors.surfaceMuted : colors.backgroundElevated,
+                borderRadius: Radius.md,
+                padding: Spacing.lg,
+                width: '100%',
+                alignItems: 'center',
+                marginBottom: Spacing.md,
+                overflow: 'hidden',
+              })}>
+              {joinCode ? (
+                <>
+                  <Text
+                    style={{
+                      fontFamily: 'DMSans_700Bold',
+                      fontSize: 36,
+                      color: colors.tint,
+                      letterSpacing: 8,
+                    }}>
+                    {joinCode}
+                  </Text>
+                  <Animated.View
+                    style={[
+                      StyleSheet.absoluteFill,
+                      {
+                        backgroundColor: '#4ade80',
+                        borderRadius: Radius.md,
+                      },
+                      flashStyle,
+                    ]}
+                    pointerEvents="none"
+                  />
+                </>
+              ) : (
+                <Text
+                  style={{
+                    fontFamily: 'DMSans_400Regular',
+                    fontSize: 16,
+                    color: colors.textSecondary,
+                  }}>
+                  Loading...
+                </Text>
+              )}
+            </Pressable>
+            <Text
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 13,
+                color: colors.textTertiary,
+                textAlign: 'center',
+              }}>
+              {joinCode ? 'Tap the code to copy' : ''}
+            </Text>
+            <Pressable
+              onPress={() => setShowJoinCodeModal(false)}
+              style={({ pressed }) => ({
+                marginTop: Spacing.lg,
+                paddingVertical: Spacing.sm,
+                paddingHorizontal: Spacing.md,
+                opacity: pressed ? 0.6 : 1,
+              })}>
+              <Text
+                style={{
+                  fontFamily: 'DMSans_600SemiBold',
+                  fontSize: 16,
+                  color: colors.accent,
+                }}>
+                Close
+              </Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
       </Modal>
     </View>
   );
