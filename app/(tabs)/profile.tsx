@@ -5,6 +5,7 @@ import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 
+import { TabScreenWrapper } from '@/components/tab-screen-wrapper';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Spacing, Radius } from '@/constants/theme';
 import { useUser } from '@/contexts/user-context';
@@ -50,6 +51,7 @@ export default function ProfileScreen() {
     : 'Traveler';
 
   return (
+    <TabScreenWrapper>
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
@@ -147,6 +149,7 @@ export default function ProfileScreen() {
         </Pressable>
       </Animated.View>
     </ScrollView>
+    </TabScreenWrapper>
   );
 }
 
