@@ -53,6 +53,7 @@ from google_places import (
     get_place_details as gp_get_place_details,
     get_distance_matrix as gp_get_distance_matrix,
 )
+from amadeus import search_flights as amadeus_search_flights, search_hotels as amadeus_search_hotels
 
 # Load .env.local from project root so EXPO_PUBLIC_OPENROUTER_API_KEY is available
 _load_env_paths = [
@@ -143,6 +144,13 @@ def startup() -> None:
     else:
         logger.warning(
             "Google Maps: no API key (set EXPO_PUBLIC_GOOGLE_MAPS_API_KEY in .env.local for realistic itinerary tools)"
+        )
+    amadeus_key = os.environ.get("EXPO_PUBLIC_AMADEUS_API_KEY") or os.environ.get("AMADEUS_API_KEY")
+    if amadeus_key:
+        logger.info("Amadeus: API key loaded for hotel/flight search (LLM tools)")
+    else:
+        logger.warning(
+            "Amadeus: no API key (set EXPO_PUBLIC_AMADEUS_API_KEY and EXPO_PUBLIC_AMADEUS_API_SECRET in .env.local for hotel/flight pricing)"
         )
 
 
@@ -404,6 +412,45 @@ def api_distance_matrix(body: DistanceMatrixBody) -> dict[str, Any]:
     )
 
 
+# --- Amadeus hotel and flight search ---
+@app.get("/amadeus/flights")
+def api_search_flights(
+    origin: str = Query(..., min_length=1),
+    destination: str = Query(..., min_length=1),
+    departure_date: str = Query(..., min_length=1),
+    adults: int = Query(1, ge=1, le=9),
+    return_date: str | None = Query(None),
+    max_results: int = Query(10, ge=1, le=25),
+) -> dict[str, Any]:
+    """Search for flight offers. Accepts city names or IATA codes. Dates in YYYY-MM-DD."""
+    return amadeus_search_flights(
+        origin=origin,
+        destination=destination,
+        departure_date=departure_date,
+        adults=adults,
+        return_date=return_date,
+        max_results=max_results,
+    )
+
+
+@app.get("/amadeus/hotels")
+def api_search_hotels(
+    city: str = Query(..., min_length=1),
+    check_in: str = Query(..., min_length=1),
+    check_out: str = Query(..., min_length=1),
+    adults: int = Query(1, ge=1, le=9),
+    max_results: int = Query(10, ge=1, le=25),
+) -> dict[str, Any]:
+    """Search for hotel offers in a city. Accepts city name or IATA code. Dates in YYYY-MM-DD."""
+    return amadeus_search_hotels(
+        city=city,
+        check_in=check_in,
+        check_out=check_out,
+        adults=adults,
+        max_results=max_results,
+    )
+
+
 # --- OpenRouter (@gemini) integration: google/gemini-3-flash-preview via OpenRouter API (OpenAI-compatible) ---
 OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 
@@ -424,6 +471,8 @@ For RESPOND_ONLY, output:
 <response>Your friendly response here. Use the existing itinerary from context to answer questions about the current plan.</response>
 
 When you list options for the user to choose from, you MUST also output a <suggestions> block so they can tap to add or replace in the plan without replying. You MAY output many suggestions in one message (e.g. options for Day 1 dinner and Day 2 lunch). Use the same order as in your response.
+
+**CRITICAL for flight/hotel options:** When you list flight or hotel options from search_flights/search_hotels, you MUST include a suggestion for EVERY option you mention—including budget options, multi-stop flights, and cheaper alternatives. Never omit any option; if you list 3 flights in your response, you MUST have 3 suggestions. Always display prices in US dollars ($), never euros (€).
 
 **Every suggestion must specify day and time when adding:** So the app adds each option to the correct slot, every suggestion MUST include **dayLabel** (e.g. "Day 1", "Day 2", "Friday") and **time** (e.g. "6:00 PM", "12:00 PM") when the user asked for options for specific days/meals. When the user asks for "2 meals" or "surprises for Day 1 and Day 2", output multiple suggestions: some with dayLabel "Day 1" and time for that meal (e.g. "6:00 PM" for dinner), others with dayLabel "Day 2" and time for that meal (e.g. "12:00 PM" for lunch). In your response text, clearly say which options are for which day and time (e.g. "For Day 1 dinner: Fog Harbor, Scoma's. For Day 2 lunch: Gott's, Slanted Door.").
 
@@ -457,8 +506,10 @@ When the user wants to create or update an itinerary, use the provided tools to 
 2. **search_food_places**: Search for restaurants by food type and city (e.g. food_type="sushi", location="San Francisco"). Use when the user wants a meal (lunch, dinner, breakfast) but didn't name a specific place. Returns name, address, rating. If unsure which restaurant to add, call this and then ask the user in your response: list the options with name, full address, and rating and ask which they prefer or if you should add the top-rated one.
 3. **get_place_details**: After search_places or search_food_places, call this with a place_id to get opening hours (weekday_text), full address, rating, user_ratings_total. Use for every place you add so the itinerary has real name, address, and rating.
 4. **get_distance_matrix**: Given two or more addresses or place names (or "lat,lng"), get driving/walking distance and duration between them. Use this to ensure travel time between activities is realistic and to order activities logically.
+5. **search_flights**: Search for real flight prices between origin and destination. Use when the user asks about flights, airline options, or flight costs. Accepts city names (e.g. "San Francisco", "Paris") or IATA codes (SFO, PAR). Returns flight offers with price in USD, carrier, departure/arrival times. Always present prices in US dollars ($).
+6. **search_hotels**: Search for hotel prices in a city. Use when the user asks about hotels, accommodation, or where to stay. Accepts city name or IATA code. Returns hotel offers with name, price in USD, chain. Dates must be YYYY-MM-DD. Always present prices in US dollars ($).
 
-Use these tools when building or updating an itinerary so that places, hours, and travel times are accurate. You may call multiple tools before outputting the final <itinerary>.
+Use these tools when building or updating an itinerary so that places, hours, travel times, flights, and hotels are accurate. You may call multiple tools before outputting the final <itinerary>.
 
 ## CRITICAL: Use real place data in the itinerary
 
@@ -469,6 +520,8 @@ When you have called search_places and/or get_place_details, you MUST use that r
 - **Activity location**: Set the location field to the formatted_address from the API for each venue.
 
 If you searched for a restaurant or venue and got results, the itinerary MUST list that place by name and include its address and rating in the description. Always call get_place_details for any place you add so you have opening hours and rating to include.
+
+When the user asks about flights or hotels, call search_flights or search_hotels to get real pricing. In your response, include the prices and options you found. If updating the itinerary, add flight or hotel activities with the real data (airline, price, times for flights; hotel name, price for hotels).
 
 ## Food / restaurant activities – required data and when to ask the user
 
@@ -583,6 +636,70 @@ PLACES_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_flights",
+            "description": "Search for flight offers with real prices between origin and destination. Use when the user asks about flights, airline options, flight costs, or wants to add flights to the itinerary. Accepts city names (e.g. 'San Francisco', 'Paris') or IATA codes (SFO, PAR). Returns offers with price, currency, carrier, departure/arrival times.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "origin": {
+                        "type": "string",
+                        "description": "Origin city or airport, e.g. 'San Francisco', 'SFO', 'NYC'",
+                    },
+                    "destination": {
+                        "type": "string",
+                        "description": "Destination city or airport, e.g. 'Paris', 'PAR', 'CDG'",
+                    },
+                    "departure_date": {
+                        "type": "string",
+                        "description": "Departure date in YYYY-MM-DD format",
+                    },
+                    "adults": {
+                        "type": "integer",
+                        "description": "Number of adult passengers (default 1)",
+                        "default": 1,
+                    },
+                    "return_date": {
+                        "type": "string",
+                        "description": "Return date for round trip in YYYY-MM-DD (optional)",
+                    },
+                },
+                "required": ["origin", "destination", "departure_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_hotels",
+            "description": "Search for hotel offers with real prices in a city. Use when the user asks about hotels, accommodation, where to stay, or wants to add lodging to the itinerary. Accepts city name or IATA code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "City name or IATA code, e.g. 'San Francisco', 'Paris', 'NYC'",
+                    },
+                    "check_in": {
+                        "type": "string",
+                        "description": "Check-in date in YYYY-MM-DD format",
+                    },
+                    "check_out": {
+                        "type": "string",
+                        "description": "Check-out date in YYYY-MM-DD format",
+                    },
+                    "adults": {
+                        "type": "integer",
+                        "description": "Number of adults (default 1)",
+                        "default": 1,
+                    },
+                },
+                "required": ["city", "check_in", "check_out"],
+            },
+        },
+    },
 ]
 
 
@@ -614,6 +731,23 @@ def _execute_tool(name: str, arguments: dict[str, Any]) -> str:
                 origins=arguments.get("origins") or [],
                 destinations=arguments.get("destinations") or [],
                 mode=arguments.get("mode", "driving"),
+            )
+        elif name == "search_flights":
+            out = amadeus_search_flights(
+                origin=arguments.get("origin", ""),
+                destination=arguments.get("destination", ""),
+                departure_date=arguments.get("departure_date", ""),
+                adults=int(arguments.get("adults", 1)),
+                return_date=arguments.get("return_date"),
+                max_results=10,
+            )
+        elif name == "search_hotels":
+            out = amadeus_search_hotels(
+                city=arguments.get("city", ""),
+                check_in=arguments.get("check_in", ""),
+                check_out=arguments.get("check_out", ""),
+                adults=int(arguments.get("adults", 1)),
+                max_results=10,
             )
         else:
             out = {"error": f"Unknown tool: {name}"}
@@ -788,8 +922,12 @@ def _call_openrouter_sync(
                             status_queue.put_nowait("Checking opening hours...")
                         elif tc.function.name == "get_distance_matrix":
                             status_queue.put_nowait("Getting travel times...")
+                        elif tc.function.name == "search_flights":
+                            status_queue.put_nowait("Searching for flights...")
+                        elif tc.function.name == "search_hotels":
+                            status_queue.put_nowait("Searching for hotels...")
                         else:
-                            status_queue.put_nowait("Fetching info from Maps...")
+                            status_queue.put_nowait("Fetching info...")
                     except queue.Full:
                         pass
                 try:

@@ -6,30 +6,65 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Dimensions,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
   RefreshControl,
+  Animated as RNAnimated,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  View,
-  Animated as RNAnimated,
-  Linking,
+  View
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
+import Animated, { FadeInDown, useAnimatedStyle, useSharedValue, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+/** Gemini icon with random rotate animation */
+function AnimatedGeminiIcon({ size = 14 }: { size?: number }) {
+  const rotation = useSharedValue(0);
+
+  useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout>;
+    const scheduleNext = () => {
+      const delay = 1500 + Math.random() * 2500;
+      timeoutId = setTimeout(() => {
+        const rot = (Math.random() > 0.5 ? 1 : -1) * 360;
+        rotation.value = withSequence(
+          withTiming(rot, { duration: 500 }),
+          withTiming(0, { duration: 500 })
+        );
+        scheduleNext();
+      }, delay);
+    };
+    scheduleNext();
+    return () => clearTimeout(timeoutId);
+  }, [rotation]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${rotation.value}deg` }],
+  }));
+
+  return (
+    <Animated.View style={[{ width: size, height: size }, animatedStyle]}>
+      <Image
+        source={require('@/assets/images/gemini-icon.png')}
+        style={{ width: size, height: size }}
+        contentFit="contain"
+      />
+    </Animated.View>
+  );
+}
+
 import ImageViewerOverlay from '@/components/image-viewer-overlay';
-import { IconSymbol } from '@/components/ui/icon-symbol';
 import { MarkdownText } from '@/components/markdown-text';
-import { Colors, Spacing, Radius } from '@/constants/theme';
-import { useTrips, type ItineraryDay, type Itinerary, type ItineraryActivity } from '@/contexts/trips-context';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { Colors, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/contexts/theme-context';
+import { useTrips, type Itinerary, type ItineraryActivity, type ItineraryDay } from '@/contexts/trips-context';
 import { useUser } from '@/contexts/user-context';
 
 const CHAT_WS_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
@@ -128,7 +163,7 @@ function normalizeItinerary(raw: unknown): Itinerary {
     }));
 }
 
-const TABS = ['Chat', 'Plan', 'Costs', 'Map', 'Album'] as const;
+const TABS = ['Chat', 'Plan', 'Map', 'Costs', 'Album'] as const;
 
 function createStyles(colors: typeof Colors.light) {
   return StyleSheet.create({
@@ -209,11 +244,17 @@ function createStyles(colors: typeof Colors.light) {
     messageBubbleWrapperUser: { alignItems: 'flex-end' },
     messageBubble: { padding: Spacing.md, borderRadius: Radius.lg, overflow: 'hidden' },
     bubbleUser: { backgroundColor: colors.tint, borderBottomRightRadius: 4 },
-    bubbleAI: { backgroundColor: colors.surfaceMuted, borderBottomLeftRadius: 4 },
+    bubbleAI: { backgroundColor: colors.bubbleAI, borderBottomLeftRadius: 4 },
     messageName: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 12,
       color: colors.textSecondary,
+      marginBottom: 4,
+    },
+    messageNameRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
       marginBottom: 4,
     },
     messageNameLeft: { textAlign: 'left' },
@@ -1365,13 +1406,22 @@ export default function TripDetailScreen() {
                             fromMe ? styles.messageBubbleWrapperUser : styles.messageBubbleWrapperAI,
                           ]}>
                           {showName && (
-                            <Text
-                              style={[
-                                styles.messageName,
-                                fromMe ? styles.messageNameRight : styles.messageNameLeft,
-                              ]}>
-                              {msg.name}
-                            </Text>
+                            isGemini ? (
+                              <View style={styles.messageNameRow}>
+                                <AnimatedGeminiIcon size={14} />
+                                <Text style={[styles.messageName, styles.messageNameLeft, { marginBottom: 0 }]}>
+                                  {msg.name}
+                                </Text>
+                              </View>
+                            ) : (
+                              <Text
+                                style={[
+                                  styles.messageName,
+                                  fromMe ? styles.messageNameRight : styles.messageNameLeft,
+                                ]}>
+                                {msg.name}
+                              </Text>
+                            )
                           )}
                           <View style={{ position: 'relative' }}>
                             <View
@@ -1379,18 +1429,19 @@ export default function TripDetailScreen() {
                                 styles.messageBubble,
                                 fromMe 
                                   ? styles.bubbleUser 
-                                  : {
-                                      backgroundColor: userColor?.bg,
-                                      borderBottomLeftRadius: 4,
-                                    },
-                                isGemini && { marginBottom: 3 },
+                                  : isGemini 
+                                    ? styles.bubbleAI 
+                                    : {
+                                        backgroundColor: userColor?.bg,
+                                        borderBottomLeftRadius: 4,
+                                      },
                               ]}>
                               <MarkdownText
                                 baseStyle={StyleSheet.flatten([
                                   styles.messageText,
                                   fromMe 
                                     ? styles.messageTextUser 
-                                    : { color: userColor?.text || colors.text },
+                                    : { color: isGemini ? colors.text : (userColor?.text || colors.text) },
                                 ])}
                                 codeStyle={
                                   fromMe
@@ -1463,6 +1514,8 @@ export default function TripDetailScreen() {
                                 end={{ x: 1, y: 0 }}
                                 style={{
                                   height: 3,
+                                  marginTop: -1,
+                                  marginRight: 10, // shorten gradient line on right (px)
                                   borderBottomLeftRadius: Radius.lg,
                                   borderBottomRightRadius: Radius.lg,
                                 }}
@@ -1476,16 +1529,15 @@ export default function TripDetailScreen() {
                   {geminiTyping && (
                     <View style={[styles.messageRow, styles.messageRowAI]}>
                       <View style={[styles.messageBubbleWrapper, styles.messageBubbleWrapperAI]}>
-                        <Text style={[styles.messageName, styles.messageNameLeft]}>Gemini</Text>
+                        <View style={styles.messageNameRow}>
+                          <AnimatedGeminiIcon size={14} />
+                          <Text style={[styles.messageName, styles.messageNameLeft, { marginBottom: 0 }]}>Gemini</Text>
+                        </View>
                         <View style={{ position: 'relative' }}>
                           <View
                             style={[
                               styles.messageBubble,
-                              {
-                                backgroundColor: getUserColor('gemini', 'Gemini').bg,
-                                borderBottomLeftRadius: 4,
-                                marginBottom: 3,
-                              },
+                              styles.bubbleAI,
                               styles.typingBubble,
                             ]}>
                             <View style={styles.typingDotsRow}>
@@ -1506,6 +1558,8 @@ export default function TripDetailScreen() {
                             end={{ x: 1, y: 0 }}
                             style={{
                               height: 3,
+                              marginTop: -1,
+                              marginRight: 8, // shorten gradient line on right (px)
                               borderBottomLeftRadius: Radius.lg,
                               borderBottomRightRadius: Radius.lg,
                             }}
@@ -1564,7 +1618,7 @@ export default function TripDetailScreen() {
                       onPress={() => completeMention(option)}
                     >
                       {option.id === 'gemini' && (
-                        <IconSymbol name="sparkles" size={18} color={colors.tint} />
+                        <AnimatedGeminiIcon size={18} />
                       )}
                       <Text style={styles.mentionOptionText}>{option.name}</Text>
                     </Pressable>
