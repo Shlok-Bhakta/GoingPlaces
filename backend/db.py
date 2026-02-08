@@ -61,6 +61,18 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trip_memberships_user ON trip_memberships(user_id)"
         )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trip_media (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trip_id TEXT NOT NULL,
+                uri TEXT NOT NULL,
+                type TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trip_media_trip ON trip_media(trip_id)"
+        )
 
 
 def _random_4_digit() -> str:
@@ -194,6 +206,54 @@ def get_user_trips(user_id: str) -> list[dict]:
             "name": r["name"] or "Joined Trip",
             "destination": r["destination"] or "TBD",
             "joined_at": r["joined_at"],
+        }
+        for r in rows
+    ]
+
+
+def add_trip_media(trip_id: str, uri: str, media_type: str) -> dict:
+    """Add one media item for a trip. type is 'image' or 'video'."""
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO trip_media (trip_id, uri, type)
+            VALUES (?, ?, ?)
+            """,
+            (trip_id, uri, media_type),
+        )
+        row_id = cur.lastrowid
+        row = conn.execute(
+            "SELECT id, trip_id, uri, type, created_at FROM trip_media WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+    return {
+        "id": str(row["id"]),
+        "trip_id": row["trip_id"],
+        "uri": row["uri"],
+        "type": row["type"],
+        "created_at": row["created_at"],
+    }
+
+
+def get_trip_media(trip_id: str) -> list[dict]:
+    """Return all media for a trip, oldest first."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, trip_id, uri, type, created_at
+            FROM trip_media
+            WHERE trip_id = ?
+            ORDER BY created_at ASC
+            """,
+            (trip_id,),
+        ).fetchall()
+    return [
+        {
+            "id": str(r["id"]),
+            "trip_id": r["trip_id"],
+            "uri": r["uri"],
+            "type": r["type"],
+            "created_at": r["created_at"],
         }
         for r in rows
     ]

@@ -20,6 +20,8 @@ from db import (
     resolve_code,
     add_trip_membership,
     get_user_trips,
+    add_trip_media,
+    get_trip_media,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -104,6 +106,33 @@ def api_join_trip(body: JoinTripBody) -> dict[str, str]:
 def api_get_user_trips(user_id: str) -> list[dict[str, Any]]:
     """Get all trips for a user."""
     return get_user_trips(user_id)
+
+
+class TripMediaItem(BaseModel):
+    uri: str
+    type: str  # 'image' | 'video'
+
+
+class TripMediaBody(BaseModel):
+    items: list[TripMediaItem]
+
+
+@app.get("/trips/{trip_id}/media")
+def list_trip_media(trip_id: str) -> list[dict[str, Any]]:
+    """List all media (photos/videos) for a trip. Persisted in DB."""
+    return get_trip_media(trip_id)
+
+
+@app.post("/trips/{trip_id}/media")
+def api_add_trip_media(trip_id: str, body: TripMediaBody) -> list[dict[str, Any]]:
+    """Add media items to a trip. Each item has uri and type ('image' or 'video')."""
+    added = []
+    for item in body.items:
+        t = (item.type or "image").lower()
+        if t not in ("image", "video"):
+            t = "image"
+        added.append(add_trip_media(trip_id, item.uri, t))
+    return added
 
 
 @app.websocket("/ws/{trip_id}")
