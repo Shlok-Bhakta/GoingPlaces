@@ -11,6 +11,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -441,27 +442,42 @@ function ImageViewerOverlay({
   if (imageUris.length === 0) return null;
 
   return (
-    <Pressable
-      style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.92)' }]}
-      onPress={onClose}
-      accessibilityRole="button"
-      accessibilityLabel="Close image viewer">
-      <View style={{ flex: 1 }} pointerEvents="box-none">
-        <PagerView style={{ flex: 1 }} initialPage={initialPage}>
-          {imageUris.map((uri, index) => (
-            <View key={`${uri}-${index}`} style={styles.pagerPage} collapsable={false}>
-              <Pressable style={styles.pagerPageInner} onPress={() => {}}>
-                <Image
-                  source={{ uri }}
-                  style={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}
-                  contentFit="contain"
-                />
-              </Pressable>
-            </View>
-          ))}
-        </PagerView>
+    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.92)' }]}>
+      <PagerView style={{ flex: 1 }} initialPage={initialPage}>
+        {imageUris.map((uri, index) => (
+          <View key={`${uri}-${index}`} style={styles.pagerPage} collapsable={false}>
+            <Pressable 
+              style={styles.pagerPageInner}
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close image viewer">
+              <Image
+                source={{ uri }}
+                style={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}
+                contentFit="contain"
+              />
+            </Pressable>
+          </View>
+        ))}
+      </PagerView>
+      {/* Close button in top-right corner */}
+      <View style={{ position: 'absolute', top: 50, right: 20, zIndex: 10 }}>
+        <Pressable
+          onPress={onClose}
+          style={({ pressed }) => ({
+            backgroundColor: pressed ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.2)',
+            width: 40,
+            height: 40,
+            borderRadius: 20,
+            justifyContent: 'center',
+            alignItems: 'center',
+          })}
+          accessibilityRole="button"
+          accessibilityLabel="Close image viewer">
+          <IconSymbol name="xmark" size={20} color="#FFFFFF" />
+        </Pressable>
       </View>
-    </Pressable>
+    </View>
   );
 }
 
@@ -490,6 +506,7 @@ export default function TripDetailScreen() {
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
   const [albumMediaByTripId, setAlbumMediaByTripId] = useState<Record<string, { uri: string; type: 'image' | 'video' }[]>>({});
   const [viewingImageIndex, setViewingImageIndex] = useState<number | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const albumMediaLoadedRef = useRef(false);
   const [message, setMessage] = useState('');
   const [mentionVisible, setMentionVisible] = useState(false);
@@ -525,6 +542,32 @@ export default function TripDetailScreen() {
     return list.filter((o) => o.name.toLowerCase().startsWith(f));
   }, [messages, mentionFilter]);
 
+  // Refresh album media
+  const handleRefreshMedia = async () => {
+    if (!id) return;
+    setRefreshing(true);
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+
+    if (base) {
+      try {
+        const res = await fetch(`${base}/trips/${encodeURIComponent(id)}/media`);
+        if (res.ok) {
+          const data: { uri: string; type: string }[] = await res.json();
+          setAlbumMediaByTripId((prev) => ({
+            ...prev,
+            [id]: (data || []).map((m) => ({
+              uri: m.uri.startsWith('http') ? m.uri : `${base}${m.uri}`,
+              type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+            })),
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to refresh media:', error);
+      }
+    }
+    setRefreshing(false);
+  };
+
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
@@ -538,7 +581,8 @@ export default function TripDetailScreen() {
           setAlbumMediaByTripId((prev) => ({
             ...prev,
             [id]: (data || []).map((m) => ({
-              uri: m.uri,
+              // Convert relative paths to full URLs
+              uri: m.uri.startsWith('http') ? m.uri : `${base}${m.uri}`,
               type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
             })),
           }));
@@ -722,45 +766,76 @@ export default function TripDetailScreen() {
       quality: 0.8,
     });
     if (result.canceled) return;
-    const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
-      uri: a.uri,
-      type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
-    }));
+    
     const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
     if (base) {
       try {
-        const res = await fetch(`${base}/trips/${encodeURIComponent(id)}/media`, {
+        // Upload actual files to backend
+        const formData = new FormData();
+        for (const asset of result.assets) {
+          const uri = asset.uri;
+          const filename = uri.split('/').pop() || 'image.jpg';
+          const match = /\.(\w+)$/.exec(filename);
+          const type = match ? `image/${match[1]}` : 'image/jpeg';
+          
+          // @ts-ignore - FormData in React Native accepts uri
+          formData.append('files', {
+            uri,
+            name: filename,
+            type,
+          });
+        }
+        
+        const res = await fetch(`${base}/trips/${encodeURIComponent(id)}/media/upload`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            items: newItems.map((item) => ({ uri: item.uri, type: item.type })),
-          }),
+          body: formData,
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
         });
+        
         if (res.ok) {
           const added = (await res.json()) as { uri: string; type: string }[];
+          // URIs are now backend URLs like /uploads/filename.jpg
           setAlbumMediaByTripId((prev) => ({
             ...prev,
             [id]: [
               ...(prev[id] ?? []),
               ...added.map((m) => ({
-                uri: m.uri,
+                uri: `${base}${m.uri}`, // Full URL for display
                 type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
               })),
             ],
           }));
         } else {
+          // Fallback: store device URIs locally
+          const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
+            uri: a.uri,
+            type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+          }));
           setAlbumMediaByTripId((prev) => ({
             ...prev,
             [id]: [...(prev[id] ?? []), ...newItems],
           }));
         }
-      } catch {
+      } catch (err) {
+        console.error('Upload failed:', err);
+        // Fallback: store device URIs locally
+        const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
+          uri: a.uri,
+          type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+        }));
         setAlbumMediaByTripId((prev) => ({
           ...prev,
           [id]: [...(prev[id] ?? []), ...newItems],
         }));
       }
     } else {
+      // No backend: store device URIs locally
+      const newItems = result.assets.map((a: { uri: string; type?: string }) => ({
+        uri: a.uri,
+        type: (a.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+      }));
       setAlbumMediaByTripId((prev) => ({
         ...prev,
         [id]: [...(prev[id] ?? []), ...newItems],
@@ -1103,7 +1178,15 @@ export default function TripDetailScreen() {
           <ScrollView
             style={styles.tabContent}
             contentContainerStyle={styles.albumScrollContent}
-            showsVerticalScrollIndicator={false}>
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefreshMedia}
+                tintColor={colors.accent}
+                colors={[colors.accent]}
+              />
+            }>
             <Text style={styles.albumSectionTitle}>Shared photos & videos</Text>
             <Text style={styles.albumSectionText}>
               {(() => {

@@ -57,7 +57,7 @@ export default function OnboardingScreen() {
     if (CHAT_API_BASE) {
       try {
         const base = CHAT_API_BASE.replace(/\/$/, '');
-        await fetch(`${base}/users`, {
+        const response = await fetch(`${base}/users`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -65,10 +65,14 @@ export default function OnboardingScreen() {
             email: `${userId}@goingplaces.local`, // Dummy email for now
             first_name: first,
             last_name: last,
-            username: null,
-            avatar_url: null,
+            username: '',
+            avatar_url: '',
           }),
         });
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('Failed to save user to backend:', response.status, errorText);
+        }
       } catch (error) {
         console.error('Failed to save user to backend:', error);
         // Continue anyway - user is saved locally

@@ -11,11 +11,24 @@ import json
 import logging
 import os
 import re
+import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+    Query,
+    File,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from db import (
@@ -59,6 +72,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Setup uploads directory
+UPLOADS_DIR = Path(__file__).parent / "uploads"
+UPLOADS_DIR.mkdir(exist_ok=True)
 
 # trip_id -> set of active WebSocket connections
 rooms: dict[str, set[WebSocket]] = {}
@@ -206,6 +223,44 @@ class TripMediaBody(BaseModel):
 def list_trip_media(trip_id: str) -> list[dict[str, Any]]:
     """List all media (photos/videos) for a trip. Persisted in DB."""
     return get_trip_media(trip_id)
+
+
+@app.post("/trips/{trip_id}/media/upload")
+async def upload_trip_media(
+    trip_id: str,
+    files: list[UploadFile] = File(...),
+) -> list[dict[str, Any]]:
+    """Upload media files for a trip. Returns list of media records with URLs."""
+    added = []
+    for file in files:
+        # Generate unique filename
+        file_ext = Path(file.filename or "image.jpg").suffix
+        unique_filename = f"{uuid.uuid4()}{file_ext}"
+        file_path = UPLOADS_DIR / unique_filename
+
+        # Save file
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        # Determine media type
+        content_type = file.content_type or ""
+        media_type = "video" if "video" in content_type else "image"
+
+        # Store in DB with URL path
+        uri = f"/uploads/{unique_filename}"
+        added.append(add_trip_media(trip_id, uri, media_type))
+
+    return added
+
+
+@app.get("/uploads/{filename}")
+async def serve_upload(filename: str) -> FileResponse:
+    """Serve uploaded media files."""
+    file_path = UPLOADS_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path)
 
 
 @app.post("/trips/{trip_id}/media")
