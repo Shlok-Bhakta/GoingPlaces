@@ -12,7 +12,10 @@ import {
     TextInput,
     View,
 } from 'react-native';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
+import * as Clipboard from 'expo-clipboard';
+import { useRouter } from 'expo-router';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Radius, Spacing } from '@/constants/theme';
@@ -34,6 +37,8 @@ export default function CreateTripScreen() {
   const { addTrip } = useTrips();
   const router = useRouter();
   const { colors } = useTheme();
+  
+  const flashOpacity = useSharedValue(0);
 
   useEffect(() => {
     if (step !== 1 || !createdTripId) return;
@@ -74,6 +79,20 @@ export default function CreateTripScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (step > 0) setStep(step - 1);
   };
+
+  const handleCopyCode = async () => {
+    if (!joinCode) return;
+    await Clipboard.setStringAsync(joinCode);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    flashOpacity.value = withSequence(
+      withTiming(1, { duration: 100 }),
+      withTiming(0, { duration: 400 })
+    );
+  };
+
+  const flashStyle = useAnimatedStyle(() => ({
+    opacity: flashOpacity.value,
+  }));
 
   const canProceed = step === 0 ? name.trim().length > 0 : true;
 
@@ -138,19 +157,32 @@ export default function CreateTripScreen() {
             style={styles.stepContent}>
             <Text style={[styles.stepTitle, { color: colors.text }]}>Invite friends</Text>
             <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              Share this code. Friends enter it in Join trip.
+              Share this code with your friends. They can enter it in the Join Trip screen.
             </Text>
-            <View style={[styles.codeBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              {joinCodeLoading ? (
-                <ActivityIndicator size="large" color={colors.tint} style={styles.codeLoader} />
-              ) : joinCode ? (
-                <Text style={[styles.joinCode, { color: colors.tint }]}>{joinCode}</Text>
-              ) : (
-                <Text style={[styles.codeFallback, { color: colors.textSecondary }]}>
-                  Couldn’t load code. Try again.
-                </Text>
-              )}
-            </View>
+            <Pressable onPress={handleCopyCode} disabled={!joinCode || joinCodeLoading}>
+              <View style={[styles.codeBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                {joinCodeLoading ? (
+                  <ActivityIndicator size="large" color={colors.tint} style={styles.codeLoader} />
+                ) : joinCode ? (
+                  <>
+                    <Text style={[styles.joinCode, { color: colors.tint }]}>{joinCode}</Text>
+                    <Text style={[styles.tapToCopy, { color: colors.textTertiary }]}>Tap to copy</Text>
+                    <Animated.View 
+                      style={[
+                        StyleSheet.absoluteFill,
+                        styles.flashOverlay,
+                        flashStyle
+                      ]} 
+                      pointerEvents="none"
+                    />
+                  </>
+                ) : (
+                  <Text style={[styles.codeFallback, { color: colors.textSecondary }]}>
+                    Couldn't load code. Try again later.
+                  </Text>
+                )}
+              </View>
+            </Pressable>
           </Animated.View>
         )}
       </ScrollView>
@@ -250,6 +282,15 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_600SemiBold',
     fontSize: 36,
     letterSpacing: 8,
+  },
+  tapToCopy: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 13,
+    marginTop: 8,
+  },
+  flashOverlay: {
+    backgroundColor: '#4ade80',
+    borderRadius: Radius.lg,
   },
   codeLoader: {
     marginVertical: Spacing.sm,
