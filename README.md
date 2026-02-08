@@ -1,5 +1,7 @@
 # Going Places
 
+![Render1d](https://github.com/user-attachments/assets/d2294511-d153-4dba-a777-833275b53b83)
+
 **Get your trips out of group chats and into the real world.**
 
 A hackathon project that transforms chaotic group chat trip planning into organized, actionable travel plans. Share a link, chat with friends, let AI help coordinate, and make it happen.
