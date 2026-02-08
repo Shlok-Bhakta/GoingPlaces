@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -163,27 +163,58 @@ const MOCK_TRENDING = [
   { id: 't3', name: 'Pacific Coast Highway', destination: 'California', members: 5 },
 ];
 
+const API_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
+
 export default function HomeScreen() {
   const [searchQuery, setSearchQuery] = useState('');
+  const [placesCovers, setPlacesCovers] = useState<Record<string, { photoUri: string; attributions: { displayName: string; uri?: string }[] }>>({});
   const scrollY = useSharedValue(0);
   const router = useRouter();
   const { addTrip, trips } = useTrips();
   const { colors } = useTheme();
   const greeting = useMemo(() => getTimeBasedGreeting(), []);
 
-  /** For each recommended template, use cover from a matching user trip (same name + destination) if it exists. */
+  /** Fetch Places API cover image for recommended and trending destinations (display only; not saved to trip). */
+  useEffect(() => {
+    const base = API_BASE.replace(/\/$/, '');
+    const destinations = [
+      ...MOCK_RECOMMENDED.map((item) => item.destination),
+      ...MOCK_TRENDING.map((item) => item.destination),
+    ];
+    const unique = [...new Set(destinations)].filter(Boolean);
+    unique.forEach((dest) => {
+      if (placesCovers[dest]) return;
+      fetch(`${base}/places/cover-image?destination=${encodeURIComponent(dest)}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.photoUri) {
+            setPlacesCovers((prev) => ({
+              ...prev,
+              [dest]: {
+                photoUri: data.photoUri,
+                attributions: data.attributions ?? [],
+              },
+            }));
+          }
+        })
+        .catch(() => {});
+    });
+  }, []);
+
+  /** For each recommended template: use cover from a matching user trip if it exists; else use Places API cover (display only). */
   const recommendedWithCovers = useMemo(() => {
     return MOCK_RECOMMENDED.map((item) => {
       const matchingTrip = trips.find(
         (t) => t.name === item.title && t.destination === item.destination
       );
+      const placesCover = placesCovers[item.destination];
       return {
         ...item,
-        coverImage: matchingTrip?.coverImage,
-        coverAttributions: matchingTrip?.coverAttributions,
+        coverImage: matchingTrip?.coverImage ?? placesCover?.photoUri,
+        coverAttributions: matchingTrip?.coverAttributions ?? placesCover?.attributions ?? [],
       };
     });
-  }, [trips]);
+  }, [trips, placesCovers]);
 
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (e) => {
@@ -238,7 +269,7 @@ export default function HomeScreen() {
 
       <Animated.View entering={FadeInDown.delay(100).duration(380)} style={styles.section}>
         <View style={styles.sectionHeader}>
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended by AI</Text>
           <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
             Curated getaways you can start in one tap
           </Text>
@@ -280,26 +311,28 @@ export default function HomeScreen() {
                     colors={['transparent', 'rgba(0,0,0,0.6)']}
                     style={styles.recommendedOverlay}
                   />
+                  <View style={styles.recommendedContrast}>
+                    <Text style={styles.recommendedTitle} numberOfLines={2}>
+                      {item.title}
+                    </Text>
+                    <Text style={styles.recommendedSubtitle}>{item.subtitle}</Text>
+                    <View style={styles.recommendedCta}>
+                      <Text style={styles.recommendedCtaText}>Start a trip</Text>
+                      <IconSymbol
+                        name="chevron.right"
+                        size={14}
+                        color="rgba(255,255,255,0.9)"
+                      />
+                    </View>
+                  </View>
                   <View style={styles.recommendedBadge}>
                     <Text style={styles.recommendedBadgeText}>{item.destination}</Text>
                   </View>
-                  {item.coverImage && item.coverAttributions && item.coverAttributions.length > 0 && (
+                  {(item.coverAttributions?.length ?? 0) > 0 && (
                     <Text style={styles.recommendedAttribution} numberOfLines={1}>
-                      Photo: {item.coverAttributions.map((a) => a.displayName).filter(Boolean).join(', ') || 'Google'}
+                      Photo: {item.coverAttributions!.map((a) => a.displayName).filter(Boolean).join(', ') || 'Google'}
                     </Text>
                   )}
-                  <Text style={styles.recommendedTitle} numberOfLines={2}>
-                    {item.title}
-                  </Text>
-                  <Text style={styles.recommendedSubtitle}>{item.subtitle}</Text>
-                  <View style={styles.recommendedCta}>
-                    <Text style={styles.recommendedCtaText}>Start a trip</Text>
-                    <IconSymbol
-                      name="chevron.right"
-                      size={14}
-                      color="rgba(255,255,255,0.9)"
-                    />
-                  </View>
                 </View>
               </Pressable>
             </Animated.View>
@@ -336,8 +369,16 @@ export default function HomeScreen() {
                 });
                 router.push(`/trip/${tripId}`);
               }}>
-              <View style={[styles.trendingIcon, { backgroundColor: colors.surfaceMuted }]}>
-                <Text style={styles.trendingEmoji}>🗺️</Text>
+              <View style={[styles.trendingIcon, { backgroundColor: colors.surfaceMuted, overflow: 'hidden' }]}>
+                {placesCovers[item.destination]?.photoUri ? (
+                  <Image
+                    source={{ uri: placesCovers[item.destination].photoUri }}
+                    style={styles.trendingThumbnail}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Text style={styles.trendingEmoji}>🗺️</Text>
+                )}
               </View>
               <View style={styles.trendingContent}>
                 <Text style={[styles.trendingName, { color: colors.text }]}>{item.name}</Text>
@@ -447,14 +488,25 @@ const styles = StyleSheet.create({
     right: 0,
     height: '60%',
   },
+  recommendedContrast: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    paddingBottom: Spacing.lg,
+    justifyContent: 'flex-end',
+  },
   recommendedAttribution: {
     position: 'absolute',
     bottom: 4,
-    left: Spacing.sm,
     right: Spacing.sm,
     fontFamily: 'DMSans_400Regular',
     fontSize: 9,
     color: 'rgba(255,255,255,0.7)',
+    textAlign: 'right',
   },
   recommendedBadge: {
     position: 'absolute',
@@ -515,6 +567,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: Spacing.md,
+  },
+  trendingThumbnail: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.md,
   },
   trendingEmoji: {
     fontSize: 22,

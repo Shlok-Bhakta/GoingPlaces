@@ -552,6 +552,55 @@ def api_geocode(address: str = Query(..., min_length=1)) -> dict[str, Any]:
     return gp_geocode_address(address)
 
 
+@app.get("/places/cover-image")
+def api_places_cover_image(
+    destination: str = Query(..., min_length=1),
+    max_width_px: int = Query(800, ge=100, le=1600),
+) -> dict[str, Any]:
+    """
+    Get a short-lived cover image URL for a destination (e.g. for home recommended cards).
+    Uses Places API: search by destination -> place details with photos -> photo media.
+    Returns { photoUri, attributions }. For display only; do not persist to trip.
+    """
+    dest = (destination or "").strip()
+    if not dest:
+        raise HTTPException(status_code=400, detail="destination is required")
+    search_result = gp_search_places(query=dest, max_results=1)
+    if search_result.get("error") or not search_result.get("results"):
+        raise HTTPException(
+            status_code=404,
+            detail=search_result.get("error") or "No place found for this destination",
+        )
+    place_id = search_result["results"][0].get("place_id")
+    if not place_id:
+        raise HTTPException(status_code=404, detail="No place_id in search result")
+    place_data = gp_get_place_with_photos(place_id)
+    if place_data.get("error"):
+        raise HTTPException(
+            status_code=502,
+            detail=place_data.get("error", "Failed to get place details"),
+        )
+    photos = place_data.get("photos") or []
+    if not photos:
+        raise HTTPException(status_code=404, detail="No photos for this place")
+    first = photos[0]
+    photo_name = first.get("name")
+    if not photo_name:
+        raise HTTPException(status_code=404, detail="No photo name")
+    attributions = first.get("authorAttributions") or []
+    attrs_out = [
+        {"displayName": a.get("displayName", ""), "uri": a.get("uri", "")}
+        for a in attributions
+    ]
+    media = gp_get_photo_media(photo_name, max_width_px=max_width_px)
+    if media.get("error") or not media.get("photoUri"):
+        raise HTTPException(
+            status_code=502,
+            detail=media.get("error", "Failed to fetch cover image"),
+        )
+    return {"photoUri": media["photoUri"], "attributions": attrs_out}
+
+
 # --- Amadeus hotel and flight search ---
 @app.get("/amadeus/flights")
 def api_search_flights(
