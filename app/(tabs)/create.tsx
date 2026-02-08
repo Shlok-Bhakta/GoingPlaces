@@ -12,7 +12,7 @@ import {
     TextInput,
     View,
 } from 'react-native';
-import Animated, { FadeIn, FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeInUp, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
 
 import { TabScreenWrapper } from '@/components/tab-screen-wrapper';
@@ -113,7 +113,7 @@ export default function CreateTripScreen() {
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <Animated.View entering={FadeIn.duration(300)} style={styles.header}>
+      <View style={styles.header}>
         {step > 0 && (
           <Pressable
             style={styles.backButton}
@@ -126,8 +126,13 @@ export default function CreateTripScreen() {
             <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
           </Pressable>
         )}
-        <Text style={[styles.headerLabel, { color: colors.textSecondary }]}>New adventure</Text>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Create trip</Text>
+        <Animated.View entering={FadeInUp.duration(320).delay(0)}>
+          <Text style={[styles.headerLabel, { color: colors.textSecondary }]}>New adventure</Text>
+        </Animated.View>
+        <Animated.View entering={FadeInUp.duration(360).delay(40)}>
+          <Text style={[styles.headerTitle, { color: colors.text }]}>Create trip</Text>
+        </Animated.View>
+        <Animated.View entering={FadeInUp.duration(360).delay(80)}>
         <View style={styles.stepDots}>
           {STEPS.map((_, i) => (
             <View
@@ -140,7 +145,8 @@ export default function CreateTripScreen() {
             />
           ))}
         </View>
-      </Animated.View>
+        </Animated.View>
+      </View>
 
       <ScrollView
         style={styles.scroll}
