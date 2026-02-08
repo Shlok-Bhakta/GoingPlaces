@@ -11,7 +11,15 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Quer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from db import init_db, add_message, get_messages, register_code, resolve_code
+from db import (
+    init_db,
+    add_message,
+    get_messages,
+    register_code,
+    resolve_code,
+    add_trip_media,
+    get_trip_media,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -73,6 +81,33 @@ def list_messages(
 ) -> list[dict[str, Any]]:
     """REST fallback: fetch message history for a trip."""
     return get_messages(trip_id, limit=limit)
+
+
+class TripMediaItem(BaseModel):
+    uri: str
+    type: str  # 'image' | 'video'
+
+
+class TripMediaBody(BaseModel):
+    items: list[TripMediaItem]
+
+
+@app.get("/trips/{trip_id}/media")
+def list_trip_media(trip_id: str) -> list[dict[str, Any]]:
+    """List all media (photos/videos) for a trip. Persisted in DB."""
+    return get_trip_media(trip_id)
+
+
+@app.post("/trips/{trip_id}/media")
+def api_add_trip_media(trip_id: str, body: TripMediaBody) -> list[dict[str, Any]]:
+    """Add media items to a trip. Each item has uri and type ('image' or 'video')."""
+    added = []
+    for item in body.items:
+        t = (item.type or "image").lower()
+        if t not in ("image", "video"):
+            t = "image"
+        added.append(add_trip_media(trip_id, item.uri, t))
+    return added
 
 
 @app.websocket("/ws/{trip_id}")
