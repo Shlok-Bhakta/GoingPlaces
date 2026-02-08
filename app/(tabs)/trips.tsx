@@ -26,7 +26,7 @@ import { useUser } from '@/contexts/user-context';
 const CHAT_API_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
 
 export default function TripsScreen() {
-  const { trips, tripsLoading, effectiveUserId, addTripFromApi } = useTrips();
+  const { trips, tripsLoading, effectiveUserId, addTripFromApi, refetchTrips } = useTrips();
   const { colors } = useTheme();
   const { user } = useUser();
   const router = useRouter();
@@ -35,14 +35,6 @@ export default function TripsScreen() {
   const [joinCode, setJoinCode] = useState('');
   const [joinLoading, setJoinLoading] = useState(false);
   const joinCodeInputRef = useRef<TextInput>(null);
-
-  const finishJoin = (trip: Trip) => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    addTripFromApi(trip);
-    setJoinModalVisible(false);
-    setJoinCode('');
-    router.push(`/trip/${trip.id}`);
-  };
 
   const handleOpenJoinModal = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -87,7 +79,12 @@ export default function TripsScreen() {
           createdBy: trip.createdBy ?? '',
           createdAt: typeof trip.createdAt === 'number' ? trip.createdAt : Date.now(),
         };
-        finishJoin(localTrip);
+        addTripFromApi(localTrip);
+        await refetchTrips();
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setJoinModalVisible(false);
+        setJoinCode('');
+        router.push(`/trip/${trip.id}`);
         return;
       }
       if (res.status === 404) {
