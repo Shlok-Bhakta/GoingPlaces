@@ -7,6 +7,7 @@ import {
   ScrollView,
   Pressable,
   Dimensions,
+  Image,
 } from 'react-native';
 import Animated, {
   FadeIn,
@@ -166,9 +167,23 @@ export default function HomeScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const scrollY = useSharedValue(0);
   const router = useRouter();
-  const { addTrip } = useTrips();
+  const { addTrip, trips } = useTrips();
   const { colors } = useTheme();
   const greeting = useMemo(() => getTimeBasedGreeting(), []);
+
+  /** For each recommended template, use cover from a matching user trip (same name + destination) if it exists. */
+  const recommendedWithCovers = useMemo(() => {
+    return MOCK_RECOMMENDED.map((item) => {
+      const matchingTrip = trips.find(
+        (t) => t.name === item.title && t.destination === item.destination
+      );
+      return {
+        ...item,
+        coverImage: matchingTrip?.coverImage,
+        coverAttributions: matchingTrip?.coverAttributions,
+      };
+    });
+  }, [trips]);
 
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (e) => {
@@ -235,7 +250,7 @@ export default function HomeScreen() {
           decelerationRate="fast"
           snapToInterval={CARD_WIDTH + CARD_MARGIN}
           snapToAlignment="start">
-          {MOCK_RECOMMENDED.map((item, i) => (
+          {recommendedWithCovers.map((item, i) => (
             <Animated.View
               key={item.id}
               entering={FadeInRight.delay(120 + i * 80).duration(360)}
@@ -246,14 +261,33 @@ export default function HomeScreen() {
                   pressed && styles.cardPressed,
                 ]}
                 onPress={() => handleStartTrip(item)}>
-                <LinearGradient
-                  colors={item.gradient as [string, string]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.recommendedGradient}>
+                <View style={styles.recommendedGradient}>
+                  {item.coverImage ? (
+                    <Image
+                      source={{ uri: item.coverImage }}
+                      style={StyleSheet.absoluteFill}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <LinearGradient
+                      colors={item.gradient as [string, string]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={StyleSheet.absoluteFill}
+                    />
+                  )}
+                  <LinearGradient
+                    colors={['transparent', 'rgba(0,0,0,0.6)']}
+                    style={styles.recommendedOverlay}
+                  />
                   <View style={styles.recommendedBadge}>
                     <Text style={styles.recommendedBadgeText}>{item.destination}</Text>
                   </View>
+                  {item.coverImage && item.coverAttributions && item.coverAttributions.length > 0 && (
+                    <Text style={styles.recommendedAttribution} numberOfLines={1}>
+                      Photo: {item.coverAttributions.map((a) => a.displayName).filter(Boolean).join(', ') || 'Google'}
+                    </Text>
+                  )}
                   <Text style={styles.recommendedTitle} numberOfLines={2}>
                     {item.title}
                   </Text>
@@ -266,7 +300,7 @@ export default function HomeScreen() {
                       color="rgba(255,255,255,0.9)"
                     />
                   </View>
-                </LinearGradient>
+                </View>
               </Pressable>
             </Animated.View>
           ))}
@@ -404,6 +438,23 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: Spacing.lg,
     justifyContent: 'flex-end',
+    overflow: 'hidden',
+  },
+  recommendedOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: '60%',
+  },
+  recommendedAttribution: {
+    position: 'absolute',
+    bottom: 4,
+    left: Spacing.sm,
+    right: Spacing.sm,
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.7)',
   },
   recommendedBadge: {
     position: 'absolute',
