@@ -165,6 +165,28 @@ def search_flights(
         return {"error": str(e), "offers": []}
 
 
+def _get_hotel_ids_by_city(city_code: str, token: str, limit: int = 20) -> list[str]:
+    """Get Amadeus hotel IDs for a city via Hotel List API (required for v3 hotel-offers)."""
+    try:
+        r = requests.get(
+            f"{BASE_URL}/v1/reference-data/locations/hotels/by-city",
+            params={"cityCode": city_code},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        hotel_ids: list[str] = []
+        for item in (data.get("data") or [])[:limit]:
+            hid = item.get("hotelId") or item.get("id")
+            if hid and len(str(hid)) == 8:
+                hotel_ids.append(str(hid))
+        return hotel_ids
+    except Exception as e:
+        logger.warning("Amadeus hotel list by city failed for %r: %s", city_code, e)
+        return []
+
+
 def search_hotels(
     city: str,
     check_in: str,
@@ -173,8 +195,8 @@ def search_hotels(
     max_results: int = 10,
 ) -> dict[str, Any]:
     """
-    Search for hotel offers in a city. Accepts city name or IATA code.
-    Dates in YYYY-MM-DD format.
+    Search for hotel offers in a city. Uses Hotel List API + Hotel Search v3 (v2 cityCode endpoint is deprecated).
+    Accepts city name or IATA code. Dates in YYYY-MM-DD format.
     """
     if not _get_credentials():
         return {"error": "Amadeus API key not configured", "hotels": []}
@@ -182,18 +204,22 @@ def search_hotels(
     token = _get_access_token()
     if not token:
         return {"error": "Failed to get Amadeus token", "hotels": []}
+    hotel_ids = _get_hotel_ids_by_city(city_code, token, limit=20)
+    if not hotel_ids:
+        return {"hotels": [], "city": city_code, "error": "No hotels found for this city"}
     try:
+        # v3 requires hotelIds and adults; cityCode/lat/long removed
         r = requests.get(
-            f"{BASE_URL}/v2/shopping/hotel-offers",
+            f"{BASE_URL}/v3/shopping/hotel-offers",
             params={
-                "cityCode": city_code,
+                "hotelIds": ",".join(hotel_ids[:20]),
+                "adults": adults,
                 "checkInDate": check_in,
                 "checkOutDate": check_out,
-                "adults": adults,
                 "currency": "USD",
             },
             headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
+            timeout=20,
         )
         r.raise_for_status()
         data = r.json()
