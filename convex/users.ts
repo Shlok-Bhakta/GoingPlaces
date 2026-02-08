@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 
 export const create = mutation({
   args: {
@@ -14,5 +14,19 @@ export const create = mutation({
       avatar: args.avatar,
       createdAt: Date.now(),
     });
+  },
+});
+
+export const get = query({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    return ctx.db.get(args.userId);
+  },
+});
+
+export const list = query({
+  args: {},
+  handler: async (ctx) => {
+    return ctx.db.query("users").order("desc").collect();
   },
 });

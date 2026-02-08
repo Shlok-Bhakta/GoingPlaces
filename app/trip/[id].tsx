@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,16 +8,21 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  Modal,
+  Alert,
 } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Spacing, Radius } from '@/constants/theme';
-import { useTrips } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
+import { useUser } from '@/contexts/user-context';
+import { useTrip, useGenerateInviteLink, useMessages, useSendMessage } from '@/hooks/useConvex';
+import { Id } from '@/convex/_generated/dataModel';
 
 const TABS = ['Chat', 'Plan', 'Costs', 'Map', 'Album'] as const;
 
@@ -170,28 +175,97 @@ function createStyles(colors: typeof Colors.light) {
       textAlign: 'center',
       marginTop: Spacing.md,
     },
+    modalContainer: {
+      flex: 1,
+    },
+    modalHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingTop: 60,
+      paddingHorizontal: Spacing.lg,
+      paddingBottom: Spacing.md,
+      borderBottomWidth: 1,
+    },
+    modalCloseBtn: {
+      padding: Spacing.sm,
+      marginLeft: -Spacing.sm,
+    },
+    modalTitle: {
+      fontFamily: 'Fraunces_600SemiBold',
+      fontSize: 20,
+    },
+    modalContent: {
+      padding: Spacing.xl,
+    },
+    modalSubtitle: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 15,
+      marginBottom: Spacing.xl,
+      textAlign: 'center',
+    },
+    codeBox: {
+      borderRadius: Radius.lg,
+      borderWidth: 2,
+      paddingVertical: Spacing.xl,
+      paddingHorizontal: Spacing.lg,
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: 100,
+    },
+    codeText: {
+      fontFamily: 'Fraunces_700Bold',
+      fontSize: 48,
+      letterSpacing: 8,
+    },
+    codeTap: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      marginTop: Spacing.sm,
+      textAlign: 'center',
+    },
+    codeHint: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      textAlign: 'center',
+      marginTop: Spacing.sm,
+      color: colors.textTertiary,
+    },
   });
 }
 
 export default function TripDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { getTrip } = useTrips();
   const { colors } = useTheme();
-  const trip = id ? getTrip(id) : null;
+  const { user } = useUser();
+  const trip = useTrip(id as Id<"trips"> | undefined);
+  const convexMessages = useMessages(id as Id<"trips"> | undefined);
+  const sendMessage = useSendMessage();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const generateInviteLink = useGenerateInviteLink();
+  const scrollRef = useRef<ScrollView>(null);
 
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
   const [message, setMessage] = useState('');
-  const [messages, setMessages] = useState([
-    { id: '1', content: "Hey! Let's figure out where we're staying.", isAI: false, name: 'You' },
-    {
-      id: '2',
-      content: "I can help with that! Based on your dates and destination, I'd recommend looking at areas near downtown. What's your budget per night?",
-      isAI: true,
-      name: 'AI Assistant',
-    },
-  ]);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteCode, setInviteCode] = useState<string>('');
+
+  // Map Convex messages to local format
+  const messages = (convexMessages || []).map((m) => ({
+    id: m._id,
+    content: m.content,
+    isAI: m.isAI,
+    name: m.isAI ? 'AI Assistant' : (m.user ? `${m.user.firstName} ${m.user.lastName}` : 'User'),
+    createdAt: m.createdAt,
+  }));
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (messages.length > 0 && scrollRef.current) {
+      scrollRef.current.scrollToEnd({ animated: true });
+    }
+  }, [messages.length]);
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -202,25 +276,61 @@ export default function TripDetailScreen() {
     }
   };
 
+  const handleShowInvite = async () => {
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      
+      if (!id || !trip) return;
+      
+      // Generate or get invite token
+      const token = await generateInviteLink({ tripId: id as Id<"trips"> });
+      setInviteCode(token);
+      setShowInviteModal(true);
+    } catch (error) {
+      console.error('Error generating invite code:', error);
+      Alert.alert('Error', 'Could not generate invite code. Please try again.');
+    }
+  };
+
+  const handleCopyCode = async () => {
+    if (!inviteCode) return;
+    await Clipboard.setStringAsync(inviteCode);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert('Copied!', `Code ${inviteCode} copied to clipboard`);
+  };
+
   if (!trip) {
     return (
       <View style={styles.container}>
-        <Text style={styles.errorText}>Trip not found</Text>
-        <Pressable onPress={handleBack}>
-          <Text style={styles.backLink}>Go back</Text>
-        </Pressable>
+        <Text style={styles.errorText}>
+          {trip === undefined ? 'Loading...' : 'Trip not found'}
+        </Text>
+        {trip === null && (
+          <Pressable onPress={handleBack}>
+            <Text style={styles.backLink}>Go back</Text>
+          </Pressable>
+        )}
       </View>
     );
   }
 
-  const handleSendMessage = () => {
-    if (!message.trim()) return;
+  const handleSendMessage = async () => {
+    if (!message.trim() || !user || !id) return;
+    
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setMessages((prev) => [
-      ...prev,
-      { id: Date.now().toString(), content: message.trim(), isAI: false, name: 'You' },
-    ]);
-    setMessage('');
+    
+    try {
+      await sendMessage({
+        tripId: id as Id<"trips">,
+        userId: user.id as Id<"users">,
+        content: message.trim(),
+        isAI: false,
+      });
+      setMessage('');
+    } catch (error) {
+      console.error('Error sending message:', error);
+      Alert.alert('Error', 'Could not send message. Please try again.');
+    }
   };
 
   return (
@@ -242,16 +352,14 @@ export default function TripDetailScreen() {
         </View>
         <Pressable
           style={styles.inviteBtn}
-          onPress={() =>
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-          }>
-          <IconSymbol name="paperplane.fill" size={18} color={colors.tint} />
+          onPress={handleShowInvite}>
+          <IconSymbol name="plus.circle.fill" size={22} color={colors.tint} />
         </Pressable>
       </View>
 
       <View style={styles.cover}>
         <LinearGradient
-          colors={['#E8A68A', '#C45C3E']}
+          colors={trip.color ? JSON.parse(trip.color) : ['#E8A68A', '#C45C3E']}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.coverGradient}
@@ -291,6 +399,7 @@ export default function TripDetailScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           keyboardVerticalOffset={100}>
           <ScrollView
+            ref={scrollRef}
             style={styles.messagesScroll}
             contentContainerStyle={styles.messagesContent}
             showsVerticalScrollIndicator={false}>
@@ -407,6 +516,54 @@ export default function TripDetailScreen() {
           </Animated.View>
         </ScrollView>
       )}
+      
+      <Modal
+        visible={showInviteModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowInviteModal(false)}>
+        <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
+          <View style={[styles.modalHeader, { borderBottomColor: colors.borderLight }]}>
+            <Pressable
+              style={styles.modalCloseBtn}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowInviteModal(false);
+              }}>
+              <IconSymbol name="xmark" size={20} color={colors.text} />
+            </Pressable>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Invite friends</Text>
+            <View style={{ width: 40 }} />
+          </View>
+
+          <View style={styles.modalContent}>
+            <Text style={[styles.modalSubtitle, { color: colors.textSecondary }]}>
+              Share this code with friends to invite them to the trip
+            </Text>
+            
+            {inviteCode ? (
+              <Pressable 
+                style={[styles.codeBox, { backgroundColor: colors.surface, borderColor: colors.tint }]}
+                onPress={handleCopyCode}>
+                <Text style={[styles.codeText, { color: colors.tint }]}>
+                  {inviteCode}
+                </Text>
+                <Text style={[styles.codeTap, { color: colors.textSecondary }]}>
+                  Tap to copy
+                </Text>
+              </Pressable>
+            ) : (
+              <View style={[styles.codeBox, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
+                <Text style={[styles.modalSubtitle, { color: colors.textTertiary }]}>Generating code...</Text>
+              </View>
+            )}
+            
+            <Text style={[styles.codeHint, { color: colors.textTertiary }]}>
+              Friends can enter this code on the Trips page to join
+            </Text>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

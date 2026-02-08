@@ -1,7 +1,8 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from 'react-native';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import { useRouter } from 'expo-router';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Spacing, Radius } from '@/constants/theme';
@@ -9,12 +10,36 @@ import { useUser } from '@/contexts/user-context';
 import { useTheme } from '@/contexts/theme-context';
 
 export default function ProfileScreen() {
-  const { user } = useUser();
+  const { user, logout } = useUser();
   const { colorScheme, colors, toggleTheme } = useTheme();
+  const router = useRouter();
 
   const displayName = user
     ? [user.firstName, user.lastName].filter(Boolean).join(' ')
     : 'Traveler';
+
+  const handleLogout = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Alert.alert(
+      'Sign Out',
+      'Are you sure you want to sign out?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Sign Out',
+          style: 'destructive',
+          onPress: async () => {
+            await logout();
+            router.replace('/onboarding');
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  };
 
   return (
     <ScrollView
@@ -52,6 +77,38 @@ export default function ProfileScreen() {
             onPress={toggleTheme}
           />
         </View>
+      </Animated.View>
+
+      <Animated.View entering={FadeInDown.delay(200).springify()} style={{ marginTop: Spacing.lg }}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Debug Info</Text>
+        <View style={[styles.debugCard, { backgroundColor: colors.surfaceMuted, borderColor: colors.borderLight }]}>
+          <Text style={[styles.debugLabel, { color: colors.textSecondary }]}>User ID</Text>
+          <Text style={[styles.debugValue, { color: colors.text }]} selectable>
+            {user?.id || 'Not logged in'}
+          </Text>
+          <View style={[styles.divider, { backgroundColor: colors.borderLight, marginLeft: 0 }]} />
+          <Text style={[styles.debugLabel, { color: colors.textSecondary }]}>Name</Text>
+          <Text style={[styles.debugValue, { color: colors.text }]} selectable>
+            {displayName}
+          </Text>
+        </View>
+      </Animated.View>
+
+      <Animated.View entering={FadeInDown.delay(250).springify()} style={{ marginTop: Spacing.lg }}>
+        <Pressable
+          style={({ pressed }) => [
+            styles.logoutButton,
+            { backgroundColor: colors.surface, borderColor: colors.borderLight },
+            pressed && styles.logoutPressed,
+          ]}
+          onPress={handleLogout}>
+          <IconSymbol
+            name="rectangle.portrait.and.arrow.right"
+            size={20}
+            color={colors.error}
+          />
+          <Text style={[styles.logoutText, { color: colors.error }]}>Sign Out</Text>
+        </Pressable>
       </Animated.View>
     </ScrollView>
   );
@@ -158,5 +215,37 @@ const styles = StyleSheet.create({
   divider: {
     height: 1,
     marginLeft: Spacing.md + 20 + Spacing.md,
+  },
+  logoutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.md,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    gap: Spacing.sm,
+  },
+  logoutPressed: {
+    opacity: 0.7,
+  },
+  logoutText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 16,
+  },
+  debugCard: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    padding: Spacing.md,
+  },
+  debugLabel: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 12,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  debugValue: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    marginBottom: Spacing.md,
   },
 });

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,7 +8,10 @@ import {
   Pressable,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
@@ -16,44 +19,97 @@ import { useRouter } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Spacing, Radius } from '@/constants/theme';
 import { useUser } from '@/contexts/user-context';
-import { useTrips } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
+import { useCreateTrip, useGenerateInviteLink } from '@/hooks/useConvex';
+import { Id } from '@/convex/_generated/dataModel';
 
-const STEPS = ['Basics', 'Destination', 'Generate', 'Invite'];
+const STEPS = ['Name', 'Code'];
 
 export default function CreateTripScreen() {
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
-  const [destination, setDestination] = useState('');
-  const [startCity, setStartCity] = useState('');
+  const [inviteCode, setInviteCode] = useState<string>('');
+  const [isCreating, setIsCreating] = useState(false);
+  const [createdTripId, setCreatedTripId] = useState<string | null>(null);
+  
   const { user } = useUser();
-  const { addTrip } = useTrips();
   const router = useRouter();
   const { colors } = useTheme();
+  const createTrip = useCreateTrip();
+  const generateInviteLink = useGenerateInviteLink();
 
-  const handleNext = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (step < STEPS.length - 1) {
-      setStep(step + 1);
-    } else {
-      handleCreate();
+  // Generate invite code when we reach step 1
+  useEffect(() => {
+    if (step === 1 && createdTripId && !inviteCode) {
+      generateCode();
+    }
+  }, [step, createdTripId]);
+
+  const generateCode = async () => {
+    if (!createdTripId) return;
+    try {
+      const code = await generateInviteLink({ tripId: createdTripId as Id<"trips"> });
+      setInviteCode(code);
+    } catch (error) {
+      console.error('Error generating invite code:', error);
     }
   };
 
-  const handleCreate = () => {
+  const handleCopyCode = async () => {
+    if (!inviteCode) return;
+    await Clipboard.setStringAsync(inviteCode);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const tripId = addTrip({
-      name: name || 'New Trip',
-      destination: destination || 'TBD',
-      startingCity: startCity || undefined,
-      status: 'planning',
-      createdBy: user?.id ?? 'current',
-    });
-    router.replace(`/trip/${tripId}`);
+    Alert.alert('Copied!', `Code ${inviteCode} copied to clipboard`);
   };
 
-  const canProceed =
-    step === 0 ? true : step === 1 ? !!destination : true;
+  const handleNext = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    // Create trip when moving to step 1 (code step)
+    if (step === 0 && !createdTripId) {
+      await handleCreate();
+      setStep(1);
+    } else if (step === 1) {
+      // Go to trip
+      if (createdTripId) {
+        router.replace(`/trip/${createdTripId}`);
+      }
+    }
+  };
+
+  const handleCreate = async () => {
+    if (!user) {
+      Alert.alert('Error', 'You must be logged in to create a trip.');
+      return;
+    }
+    
+    try {
+      setIsCreating(true);
+      
+      // Create trip in Convex
+      const tripId = await createTrip({
+        name: name || 'New Trip',
+        destination: 'TBD',
+        status: 'planning' as const,
+        createdBy: user.id as Id<"users">,
+      });
+      
+      setCreatedTripId(tripId as string);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error) {
+      console.error('Error creating trip:', error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        'Error Creating Trip',
+        error instanceof Error ? error.message : 'Could not create trip. Please try again.',
+        [{ text: 'OK' }]
+      );
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  const canProceed = step === 0 ? name.trim().length > 0 : true;
 
   return (
     <KeyboardAvoidingView
@@ -92,23 +148,17 @@ export default function CreateTripScreen() {
           <Animated.View
             entering={FadeInDown.springify()}
             style={styles.stepContent}>
-            <Text style={[styles.stepTitle, { color: colors.text }]}>Trip basics</Text>
+            <Text style={[styles.stepTitle, { color: colors.text }]}>Name your trip</Text>
             <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              You can always edit these later — or skip and start chatting!
+              Give your trip a fun name
             </Text>
             <TextInput
               style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
-              placeholder="Trip name"
+              placeholder="e.g. Tokyo Adventure"
               placeholderTextColor={colors.textTertiary}
               value={name}
               onChangeText={setName}
-            />
-            <TextInput
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
-              placeholder="Starting city (optional)"
-              placeholderTextColor={colors.textTertiary}
-              value={startCity}
-              onChangeText={setStartCity}
+              autoFocus
             />
           </Animated.View>
         )}
@@ -117,58 +167,31 @@ export default function CreateTripScreen() {
           <Animated.View
             entering={FadeInDown.springify()}
             style={styles.stepContent}>
-            <Text style={[styles.stepTitle, { color: colors.text }]}>Where to?</Text>
+            <Text style={[styles.stepTitle, { color: colors.text }]}>Share code</Text>
             <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              Search for a destination or pick a mock event
+              Tap the code to copy and share with friends
             </Text>
-            <TextInput
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
-              placeholder="Destination or event"
-              placeholderTextColor={colors.textTertiary}
-              value={destination}
-              onChangeText={setDestination}
-              autoFocus
-            />
-          </Animated.View>
-        )}
-
-        {step === 2 && (
-          <Animated.View
-            entering={FadeInDown.springify()}
-            style={styles.stepContent}>
-            <Text style={[styles.stepTitle, { color: colors.text }]}>Generate with AI</Text>
-            <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              {"We'll create a draft itinerary and suggestions based on your trip"}
-            </Text>
-            <View style={[styles.generatePreview, { backgroundColor: colors.surfaceMuted }]}>
-              <Text style={[styles.generatePlaceholder, { color: colors.textSecondary }]}>
-                Itinerary will be generated when you open the trip and chat with
-                the AI assistant
-              </Text>
-            </View>
-          </Animated.View>
-        )}
-
-        {step === 3 && (
-          <Animated.View
-            entering={FadeInDown.springify()}
-            style={styles.stepContent}>
-            <Text style={[styles.stepTitle, { color: colors.text }]}>Invite friends</Text>
-            <Text style={[styles.stepSubtitle, { color: colors.textSecondary }]}>
-              Share a link — anyone who clicks joins the trip
-            </Text>
-            <View style={[styles.inviteBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <Text style={[styles.inviteLink, { color: colors.textSecondary }]}>goingplaces.app/join/abc123</Text>
-              <Pressable
-                style={styles.copyBtn}
-                onPress={() =>
-                  Haptics.notificationAsync(
-                    Haptics.NotificationFeedbackType.Success
-                  )
-                }>
-                <Text style={[styles.copyBtnText, { color: colors.tint }]}>Copy</Text>
+            
+            {inviteCode ? (
+              <Pressable 
+                style={[styles.codeBox, { backgroundColor: colors.surface, borderColor: colors.tint }]}
+                onPress={handleCopyCode}>
+                <Text style={[styles.codeText, { color: colors.tint }]}>
+                  {inviteCode}
+                </Text>
+                <Text style={[styles.codeTap, { color: colors.textSecondary }]}>
+                  Tap to copy
+                </Text>
               </Pressable>
-            </View>
+            ) : (
+              <View style={[styles.codeBox, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
+                <ActivityIndicator color={colors.tint} size="large" />
+              </View>
+            )}
+            
+            <Text style={[styles.codeHint, { color: colors.textTertiary }]}>
+              Friends can enter this code on the Trips page to join
+            </Text>
           </Animated.View>
         )}
       </ScrollView>
@@ -179,12 +202,12 @@ export default function CreateTripScreen() {
             styles.primaryButton,
             { backgroundColor: colors.tint },
             pressed && styles.buttonPressed,
-            !canProceed && styles.buttonDisabled,
+            (!canProceed || isCreating) && styles.buttonDisabled,
           ]}
           onPress={handleNext}
-          disabled={!canProceed}>
+          disabled={!canProceed || isCreating}>
           <Text style={styles.primaryButtonText}>
-            {step === STEPS.length - 1 ? 'Go to trip' : 'Continue'}
+            {isCreating ? 'Creating...' : step === STEPS.length - 1 ? 'Go to trip' : 'Continue'}
           </Text>
         </Pressable>
       </View>
@@ -255,37 +278,31 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.lg,
   },
-  generatePreview: {
+  codeBox: {
     borderRadius: Radius.lg,
-    padding: Spacing.xl,
-    minHeight: 120,
+    borderWidth: 2,
+    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+    alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 100,
   },
-  generatePlaceholder: {
+  codeText: {
+    fontFamily: 'Fraunces_700Bold',
+    fontSize: 48,
+    letterSpacing: 8,
+  },
+  codeTap: {
     fontFamily: 'DMSans_400Regular',
-    fontSize: 15,
+    fontSize: 13,
+    marginTop: Spacing.sm,
     textAlign: 'center',
   },
-  inviteBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    paddingHorizontal: Spacing.md,
-  },
-  inviteLink: {
-    flex: 1,
+  codeHint: {
     fontFamily: 'DMSans_400Regular',
-    fontSize: 14,
-    paddingVertical: Spacing.md,
-  },
-  copyBtn: {
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-  },
-  copyBtnText: {
-    fontFamily: 'DMSans_600SemiBold',
-    fontSize: 14,
+    fontSize: 13,
+    textAlign: 'center',
+    marginTop: Spacing.sm,
   },
   footer: {
     padding: Spacing.lg,

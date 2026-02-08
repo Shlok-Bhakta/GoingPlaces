@@ -22,11 +22,14 @@ export default defineSchema({
       v.literal("done")
     ),
     coverImage: v.optional(v.string()),
+    color: v.optional(v.string()), // Gradient color for trip card
     createdBy: v.id("users"),
     createdAt: v.number(),
+    inviteToken: v.optional(v.string()), // Unique token for invite links
   })
     .index("by_status", ["status"])
-    .index("by_created", ["createdAt"]),
+    .index("by_created", ["createdAt"])
+    .index("by_invite_token", ["inviteToken"]),
 
   tripMembers: defineTable({
     tripId: v.id("trips"),

@@ -13,8 +13,24 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 
 import { Spacing, Radius } from '@/constants/theme';
-import type { Trip, TripStatus } from '@/contexts/trips-context';
+import type { TripStatus } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
+
+// Type that works with both context and Convex trips
+type Trip = {
+  id: string;
+  name: string;
+  destination: string;
+  startDate?: number;
+  endDate?: number;
+  startingCity?: string;
+  status: TripStatus;
+  coverImage?: string;
+  color?: string; // Stored gradient from Convex
+  createdBy: string;
+  createdAt: number;
+  members?: { id: string; name: string; avatar?: string }[];
+};
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = width - Spacing.xl * 2;
@@ -38,7 +54,19 @@ export function TripCard({
 }) {
   const router = useRouter();
   const { colors } = useTheme();
-  const gradient = COVER_GRADIENTS[index % COVER_GRADIENTS.length];
+  
+  // Use stored color if available, otherwise fallback to index-based gradient
+  let gradient: [string, string];
+  if (trip.color) {
+    try {
+      gradient = JSON.parse(trip.color) as [string, string];
+    } catch {
+      gradient = COVER_GRADIENTS[index % COVER_GRADIENTS.length] as [string, string];
+    }
+  } else {
+    gradient = COVER_GRADIENTS[index % COVER_GRADIENTS.length] as [string, string];
+  }
+  
   const statusColors: Record<TripStatus, string> = {
     planning: colors.warning,
     booked: colors.success,
@@ -91,7 +119,7 @@ export function TripCard({
             />
           ) : (
             <LinearGradient
-              colors={gradient as [string, string]}
+              colors={gradient}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.coverImage}

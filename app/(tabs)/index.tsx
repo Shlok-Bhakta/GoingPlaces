@@ -7,6 +7,7 @@ import {
   ScrollView,
   Pressable,
   Dimensions,
+  Alert,
 } from 'react-native';
 import Animated, {
   FadeIn,
@@ -20,8 +21,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Spacing, Radius } from '@/constants/theme';
-import { useTrips } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
+import { useUser } from '@/contexts/user-context';
+import { useCreateTrip } from '@/hooks/useConvex';
+import { Id } from '@/convex/_generated/dataModel';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = width * 0.75;
@@ -61,7 +64,8 @@ export default function HomeScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const scrollY = useSharedValue(0);
   const router = useRouter();
-  const { addTrip } = useTrips();
+  const { user } = useUser();
+  const createTrip = useCreateTrip();
   const { colors } = useTheme();
 
   const scrollHandler = useAnimatedScrollHandler({
@@ -70,15 +74,29 @@ export default function HomeScreen() {
     },
   });
 
-  const handleStartTrip = (item: (typeof MOCK_RECOMMENDED)[0]) => {
+  const handleStartTrip = async (item: (typeof MOCK_RECOMMENDED)[0]) => {
+    if (!user) {
+      Alert.alert('Error', 'You must be logged in to create a trip.');
+      return;
+    }
+    
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const tripId = addTrip({
-      name: item.title,
-      destination: item.destination,
-      status: 'planning',
-      createdBy: 'current',
-    });
-    router.push(`/trip/${tripId}`);
+    try {
+      const tripId = await createTrip({
+        name: item.title,
+        destination: item.destination,
+        status: 'planning',
+        createdBy: user.id as Id<"users">,
+      });
+      router.push(`/trip/${tripId}`);
+    } catch (error) {
+      console.error('Error creating trip:', error);
+      Alert.alert(
+        'Error Creating Trip',
+        error instanceof Error ? error.message : 'Could not create trip. Please try again.',
+        [{ text: 'OK' }]
+      );
+    }
   };
 
   return (
@@ -156,15 +174,21 @@ export default function HomeScreen() {
               { backgroundColor: colors.surface, borderColor: colors.borderLight },
               pressed && styles.rowPressed,
             ]}
-            onPress={() => {
+            onPress={async () => {
+              if (!user) return;
+              
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              const tripId = addTrip({
-                name: item.name,
-                destination: item.destination,
-                status: 'planning',
-                createdBy: 'current',
-              });
-              router.push(`/trip/${tripId}`);
+              try {
+                const tripId = await createTrip({
+                  name: item.name,
+                  destination: item.destination,
+                  status: 'planning',
+                  createdBy: user.id as Id<"users">,
+                });
+                router.push(`/trip/${tripId}`);
+              } catch (error) {
+                console.error('Error creating trip:', error);
+              }
             }}>
             <View style={[styles.trendingIcon, { backgroundColor: colors.surfaceMuted }]}>
               <Text style={styles.trendingEmoji}>🗺️</Text>

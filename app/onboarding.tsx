@@ -7,6 +7,7 @@ import {
   Pressable,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import Animated, {
   FadeIn,
@@ -19,32 +20,53 @@ import { useRouter } from 'expo-router';
 import { useUser } from '@/contexts/user-context';
 import { useTheme } from '@/contexts/theme-context';
 import { Spacing, Radius } from '@/constants/theme';
+import { useCreateUser } from '@/hooks/useConvex';
 
 export default function OnboardingScreen() {
   const [step, setStep] = useState<'welcome' | 'name'>('welcome');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
   const { setUser } = useUser();
   const router = useRouter();
   const { colors } = useTheme();
+  const createUser = useCreateUser();
 
   const handleGetStarted = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setStep('name');
   };
 
-  const handleDone = () => {
+  const handleDone = async () => {
     const first = firstName.trim() || 'Traveler';
     const last = lastName.trim() || '';
     if (!first) return;
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setUser({
-      id: `user_${Date.now()}`,
-      firstName: first,
-      lastName: last,
-      avatar: `${first[0]}${last[0] || ''}`.toUpperCase(),
-    });
-    router.replace('/(tabs)');
+    
+    try {
+      setIsCreatingUser(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      
+      const avatar = `${first[0]}${last[0] || ''}`.toUpperCase();
+      const userId = await createUser({
+        firstName: first,
+        lastName: last,
+        avatar,
+      });
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setUser({
+        id: userId,
+        firstName: first,
+        lastName: last,
+        avatar,
+      });
+      router.replace('/(tabs)');
+    } catch (error) {
+      console.error('Error creating user:', error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setIsCreatingUser(false);
+    }
   };
 
   if (step === 'welcome') {
@@ -126,11 +148,15 @@ export default function OnboardingScreen() {
               styles.primaryButton,
               { backgroundColor: colors.tint },
               pressed && styles.buttonPressed,
-              (!firstName.trim() && !lastName.trim()) && styles.buttonDisabled,
+              ((!firstName.trim() && !lastName.trim()) || isCreatingUser) && styles.buttonDisabled,
             ]}
             onPress={handleDone}
-            disabled={!firstName.trim() && !lastName.trim()}>
-            <Text style={styles.primaryButtonText}>{"Let's go"}</Text>
+            disabled={(!firstName.trim() && !lastName.trim()) || isCreatingUser}>
+            {isCreatingUser ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text style={styles.primaryButtonText}>{"Let's go"}</Text>
+            )}
           </Pressable>
         </Animated.View>
       </View>

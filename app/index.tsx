@@ -4,7 +4,7 @@ import { useUser } from '@/contexts/user-context';
 import { useTheme } from '@/contexts/theme-context';
 
 export default function Index() {
-  const { user, isLoading } = useUser();
+  const { user, isLoading, setUser } = useUser();
   const { colors } = useTheme();
 
   if (isLoading) {
@@ -13,6 +13,13 @@ export default function Index() {
         <ActivityIndicator size="large" color={colors.tint} />
       </View>
     );
+  }
+
+  // Check if user has invalid ID format (old temporary ID)
+  if (user && user.id.startsWith('user_')) {
+    // Clear invalid user and redirect to onboarding
+    setUser(null);
+    return <Redirect href="/onboarding" />;
   }
 
   if (!user) {

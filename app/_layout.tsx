@@ -16,11 +16,14 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import * as SplashScreen from 'expo-splash-screen';
 import 'react-native-reanimated';
+import { ConvexProvider, ConvexReactClient } from 'convex/react';
 
 import { UserProvider } from '@/contexts/user-context';
 import { TripsProvider } from '@/contexts/trips-context';
 import { ThemeProvider as AppThemeProvider, useTheme } from '@/contexts/theme-context';
 import { Colors } from '@/constants/theme';
+
+const convex = new ConvexReactClient(process.env.EXPO_PUBLIC_CONVEX_URL!);
 
 SplashScreen.preventAutoHideAsync();
 
@@ -64,14 +67,16 @@ function ThemedRoot() {
   const { colorScheme } = useTheme();
   const navTheme = colorScheme === 'dark' ? DarkNavTheme : LightNavTheme;
   return (
-    <ThemeProvider value={navTheme}>
-      <UserProvider>
-        <TripsProvider>
-          <RootLayoutNav />
-          <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
-        </TripsProvider>
-      </UserProvider>
-    </ThemeProvider>
+    <ConvexProvider client={convex}>
+      <ThemeProvider value={navTheme}>
+        <UserProvider>
+          <TripsProvider>
+            <RootLayoutNav />
+            <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
+          </TripsProvider>
+        </UserProvider>
+      </ThemeProvider>
+    </ConvexProvider>
   );
 }
 
