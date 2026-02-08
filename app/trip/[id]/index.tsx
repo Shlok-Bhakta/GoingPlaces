@@ -510,17 +510,14 @@ function createStyles(colors: typeof Colors.light) {
       color: colors.text,
     },
     typingBubble: {
-      paddingVertical: Spacing.sm,
+      paddingVertical: Spacing.md,
       paddingHorizontal: Spacing.md,
-      flexDirection: 'column',
-      alignItems: 'flex-start',
-      gap: 6,
+      alignSelf: 'flex-start',
     },
     typingDotsRow: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
-      minWidth: 60,
     },
     typingDot: {
       width: 6,
@@ -622,6 +619,7 @@ export default function TripDetailScreen() {
   const [geminiTypingStatus, setGeminiTypingStatus] = useState('');
   const [usersTyping, setUsersTyping] = useState<Set<string>>(new Set());
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const userTypingTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const messagesScrollRef = useRef<ScrollView>(null);
   const dotAnims = useRef([new RNAnimated.Value(0.3), new RNAnimated.Value(0.3), new RNAnimated.Value(0.3)]).current;
   const [messages, setMessages] = useState<ChatMessage[]>(
@@ -1105,15 +1103,58 @@ export default function TripDetailScreen() {
         } else if (data.type === 'typing' && data.user_name && data.user_id) {
           // Handle typing from other users (not self, not Gemini)
           if (data.user_id !== (user?.id ?? '')) {
-            setUsersTyping((prev) => new Set(prev).add(data.user_id));
-            // Clear typing indicator after 3 seconds
-            setTimeout(() => {
+            console.log('[Typing] User typing:', data.user_id, data.user_name);
+            
+            // Clear any existing timeout for this user
+            const existingTimeout = userTypingTimeoutsRef.current.get(data.user_id);
+            if (existingTimeout) {
+              clearTimeout(existingTimeout);
+            }
+            
+            // Show typing indicator
+            setUsersTyping((prev) => {
+              const newSet = new Set(prev);
+              newSet.add(data.user_id);
+              console.log('[Typing] Updated usersTyping:', Array.from(newSet));
+              return newSet;
+            });
+            
+            // Set new timeout to clear typing indicator after 3 seconds of no activity
+            const timeout = setTimeout(() => {
+              console.log('[Typing] Timeout clearing:', data.user_id);
               setUsersTyping((prev) => {
                 const next = new Set(prev);
                 next.delete(data.user_id);
                 return next;
               });
+              userTypingTimeoutsRef.current.delete(data.user_id);
             }, 3000);
+            
+            userTypingTimeoutsRef.current.set(data.user_id, timeout);
+          }
+        } else if (data.type === 'stop_typing' && data.user_id) {
+          // Handle stop_typing event - clear immediately after a short delay
+          if (data.user_id !== (user?.id ?? '')) {
+            console.log('[Typing] Stop typing:', data.user_id);
+            
+            // Clear any existing timeout for this user
+            const existingTimeout = userTypingTimeoutsRef.current.get(data.user_id);
+            if (existingTimeout) {
+              clearTimeout(existingTimeout);
+            }
+            
+            // Set shorter timeout to clear typing indicator after stop_typing
+            const timeout = setTimeout(() => {
+              console.log('[Typing] Stop typing timeout clearing:', data.user_id);
+              setUsersTyping((prev) => {
+                const next = new Set(prev);
+                next.delete(data.user_id);
+                return next;
+              });
+              userTypingTimeoutsRef.current.delete(data.user_id);
+            }, 500);
+            
+            userTypingTimeoutsRef.current.set(data.user_id, timeout);
           }
         } else if (data.type === 'message' && data.message) {
           const m = data.message;
@@ -1123,6 +1164,13 @@ export default function TripDetailScreen() {
           }
           // Clear typing indicator for this user
           if (m.user_id) {
+            // Clear any pending timeout
+            const existingTimeout = userTypingTimeoutsRef.current.get(m.user_id);
+            if (existingTimeout) {
+              clearTimeout(existingTimeout);
+              userTypingTimeoutsRef.current.delete(m.user_id);
+            }
+            
             setUsersTyping((prev) => {
               const next = new Set(prev);
               next.delete(m.user_id);
@@ -1767,7 +1815,7 @@ export default function TripDetailScreen() {
                     return (
                       <View key={userId} style={[styles.messageRow, styles.messageRowAI]}>
                         <View style={[styles.messageBubbleWrapper, styles.messageBubbleWrapperAI]}>
-                          <Text style={[styles.messageName, styles.messageNameLeft]}>
+                          <Text style={[styles.messageName, styles.messageNameLeft, { marginBottom: 0 }]}>
                             {typingUser.name}
                           </Text>
                           <View
@@ -1779,9 +1827,11 @@ export default function TripDetailScreen() {
                               },
                               styles.typingBubble,
                             ]}>
-                            <View style={styles.typingDot} />
-                            <View style={styles.typingDot} />
-                            <View style={styles.typingDot} />
+                            <View style={styles.typingDotsRow}>
+                              <View style={styles.typingDot} />
+                              <View style={styles.typingDot} />
+                              <View style={styles.typingDot} />
+                            </View>
                           </View>
                         </View>
                       </View>
