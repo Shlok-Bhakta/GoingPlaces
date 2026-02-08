@@ -62,7 +62,7 @@ export default function CreateTripScreen() {
         destination: 'TBD',
         status: 'planning',
         createdBy: user?.id ?? 'current',
-      });
+      }, user?.id);
       setCreatedTripId(tripId);
       setStep(1);
     } else {

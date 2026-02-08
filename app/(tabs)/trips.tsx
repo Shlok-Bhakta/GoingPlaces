@@ -20,17 +20,26 @@ import { TripCard } from '@/components/trip-card';
 import { Spacing, Radius } from '@/constants/theme';
 import { useTrips } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
+import { useUser } from '@/contexts/user-context';
 
 const CHAT_API_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
 
 export default function TripsScreen() {
-  const { trips, joinTrip } = useTrips();
+  const { trips, joinTrip, fetchUserTrips } = useTrips();
   const { colors } = useTheme();
+  const { user } = useUser();
   const router = useRouter();
   const [joinModalVisible, setJoinModalVisible] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [joinLoading, setJoinLoading] = useState(false);
   const joinCodeInputRef = useRef<TextInput>(null);
+
+  // Fetch trips from backend when user is available
+  useEffect(() => {
+    if (user?.id) {
+      fetchUserTrips(user.id);
+    }
+  }, [user?.id, fetchUserTrips]);
 
   const handleOpenJoinModal = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -47,7 +56,7 @@ export default function TripsScreen() {
 
   const finishJoin = (tripId: string) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    joinTrip(tripId);
+    joinTrip(tripId, { userId: user?.id });
     setJoinModalVisible(false);
     setJoinCode('');
     router.push(`/trip/${tripId}`);
@@ -97,22 +106,24 @@ export default function TripsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
         <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
-          <View style={styles.headerRow}>
-            <Text style={[styles.title, { color: colors.text }]}>Your trips</Text>
-            <Pressable
-              style={[styles.joinBtn, { backgroundColor: colors.tint }]}
-              onPress={handleOpenJoinModal}
-              accessibilityRole="button"
-              accessibilityLabel="Join trip">
-              <Text style={styles.joinBtnText}>Join trip</Text>
-              <IconSymbol name="link" size={16} color="#FFFFFF" />
-            </Pressable>
-          </View>
+          <Text style={[styles.title, { color: colors.text }]}>Your trips</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             {uniqueTrips.length === 0
               ? 'Trips you create or join will appear here'
               : `${uniqueTrips.length} trip${uniqueTrips.length === 1 ? '' : 's'}`}
           </Text>
+          <Pressable
+            style={({ pressed }) => [
+              styles.joinButton,
+              { backgroundColor: colors.tint },
+              pressed && styles.buttonPressed,
+            ]}
+            onPress={handleOpenJoinModal}
+            accessibilityRole="button"
+            accessibilityLabel="Join trip">
+            <IconSymbol name="link" size={20} color="#FFFFFF" />
+            <Text style={styles.joinButtonText}>Join trip</Text>
+          </Pressable>
         </Animated.View>
 
       {currentTrips.length > 0 && (
@@ -225,34 +236,31 @@ const styles = StyleSheet.create({
   header: {
     marginBottom: Spacing.xl,
   },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.md,
-  },
   title: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 28,
-    flex: 1,
-  },
-  joinBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    borderRadius: Radius.full,
-  },
-  joinBtnText: {
-    fontFamily: 'DMSans_600SemiBold',
-    fontSize: 14,
-    color: '#FFFFFF',
   },
   subtitle: {
     fontFamily: 'DMSans_400Regular',
     fontSize: 15,
     marginTop: 4,
+    marginBottom: Spacing.md,
+  },
+  joinButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.lg,
+  },
+  joinButtonText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 17,
+    color: '#FFFFFF',
+  },
+  buttonPressed: {
+    opacity: 0.9,
   },
   sectionTitle: {
     fontFamily: 'Fraunces_600SemiBold',

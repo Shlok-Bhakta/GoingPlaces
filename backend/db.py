@@ -1,11 +1,14 @@
 """SQLite persistence for chat messages and 4-digit join codes."""
+
 import os
 import random
 import sqlite3
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
-DB_PATH = os.environ.get("CHAT_DB_PATH", os.path.join(os.path.dirname(__file__), "chat.db"))
+DB_PATH = os.environ.get(
+    "CHAT_DB_PATH", os.path.join(os.path.dirname(__file__), "chat.db")
+)
 
 
 @contextmanager
@@ -44,6 +47,19 @@ def init_db() -> None:
         """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trip_codes_trip_id ON trip_codes(trip_id)"
+        )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trip_memberships (
+                trip_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                name TEXT,
+                destination TEXT,
+                joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (trip_id, user_id)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trip_memberships_user ON trip_memberships(user_id)"
         )
 
 
@@ -138,6 +154,46 @@ def get_messages(trip_id: str, limit: int = 200) -> list[dict]:
             "content": r["content"],
             "is_ai": bool(r["is_ai"]),
             "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+def add_trip_membership(
+    trip_id: str,
+    user_id: str,
+    name: Optional[str] = None,
+    destination: Optional[str] = None,
+) -> None:
+    """Add a user to a trip (idempotent)."""
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO trip_memberships (trip_id, user_id, name, destination)
+            VALUES (?, ?, ?, ?)
+            """,
+            (trip_id, user_id, name, destination),
+        )
+
+
+def get_user_trips(user_id: str) -> list[dict]:
+    """Get all trips for a user."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT trip_id, name, destination, joined_at
+            FROM trip_memberships
+            WHERE user_id = ?
+            ORDER BY joined_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [
+        {
+            "trip_id": r["trip_id"],
+            "name": r["name"] or "Joined Trip",
+            "destination": r["destination"] or "TBD",
+            "joined_at": r["joined_at"],
         }
         for r in rows
     ]

@@ -3,6 +3,7 @@ Custom Python backend for Going Places chat.
 - WebSocket rooms per trip_id so multiple devices share the same chat.
 - SQLite for message persistence and history.
 """
+
 import json
 import logging
 from typing import Any
@@ -11,7 +12,15 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Quer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from db import init_db, add_message, get_messages, register_code, resolve_code
+from db import (
+    init_db,
+    add_message,
+    get_messages,
+    register_code,
+    resolve_code,
+    add_trip_membership,
+    get_user_trips,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,7 +67,9 @@ def api_register_code(body: RegisterCodeBody) -> dict[str, str]:
 
 
 @app.get("/resolve-code")
-def api_resolve_code(code: str = Query(..., min_length=4, max_length=4)) -> dict[str, Any]:
+def api_resolve_code(
+    code: str = Query(..., min_length=4, max_length=4),
+) -> dict[str, Any]:
     """Resolve 4-digit code to trip_id. Returns 404 if invalid."""
     trip_id = resolve_code(code)
     if not trip_id:
@@ -73,6 +84,26 @@ def list_messages(
 ) -> list[dict[str, Any]]:
     """REST fallback: fetch message history for a trip."""
     return get_messages(trip_id, limit=limit)
+
+
+class JoinTripBody(BaseModel):
+    trip_id: str
+    user_id: str
+    name: str | None = None
+    destination: str | None = None
+
+
+@app.post("/trips/join")
+def api_join_trip(body: JoinTripBody) -> dict[str, str]:
+    """Register a user as a member of a trip."""
+    add_trip_membership(body.trip_id, body.user_id, body.name, body.destination)
+    return {"status": "ok"}
+
+
+@app.get("/users/{user_id}/trips")
+def api_get_user_trips(user_id: str) -> list[dict[str, Any]]:
+    """Get all trips for a user."""
+    return get_user_trips(user_id)
 
 
 @app.websocket("/ws/{trip_id}")

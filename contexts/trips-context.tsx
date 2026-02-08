@@ -1,4 +1,8 @@
-import React, { createContext, useCallback, useContext, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const TRIPS_STORAGE_KEY = '@goingplaces_trips';
+const CHAT_API_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
 
 export type TripStatus = 'planning' | 'booked' | 'live' | 'done';
 
@@ -40,10 +44,12 @@ export type Trip = {
 
 type TripsContextType = {
   trips: Trip[];
-  addTrip: (trip: Omit<Trip, 'id' | 'createdAt'>) => string;
-  joinTrip: (tripId: string, options?: { name?: string; destination?: string }) => void;
+  addTrip: (trip: Omit<Trip, 'id' | 'createdAt'>, userId?: string) => string;
+  joinTrip: (tripId: string, options?: { name?: string; destination?: string; userId?: string }) => void;
   getTrip: (id: string) => Trip | undefined;
   updateTrip: (id: string, updates: Partial<Omit<Trip, 'id' | 'createdAt'>>) => void;
+  fetchUserTrips: (userId: string) => Promise<void>;
+  isLoading: boolean;
 };
 
 const TripsContext = createContext<TripsContextType | null>(null);
@@ -52,8 +58,63 @@ let tripIdCounter = 1;
 
 export function TripsProvider({ children }: { children: React.ReactNode }) {
   const [trips, setTrips] = useState<Trip[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const addTrip = useCallback((trip: Omit<Trip, 'id' | 'createdAt'>) => {
+  // Load trips from AsyncStorage on mount
+  useEffect(() => {
+    AsyncStorage.getItem(TRIPS_STORAGE_KEY).then((raw) => {
+      if (raw) {
+        try {
+          const savedTrips = JSON.parse(raw);
+          setTrips(savedTrips);
+        } catch (e) {
+          console.error('Failed to load trips from storage:', e);
+        }
+      }
+    });
+  }, []);
+
+  // Save trips to AsyncStorage whenever they change
+  useEffect(() => {
+    AsyncStorage.setItem(TRIPS_STORAGE_KEY, JSON.stringify(trips)).catch((e) => {
+      console.error('Failed to save trips to storage:', e);
+    });
+  }, [trips]);
+
+  const fetchUserTrips = useCallback(async (userId: string) => {
+    if (!userId) return;
+    setIsLoading(true);
+    try {
+      const base = CHAT_API_BASE.replace(/\/$/, '');
+      const res = await fetch(`${base}/users/${encodeURIComponent(userId)}/trips`);
+      if (res.ok) {
+        const userTrips = await res.json();
+        // Merge with existing trips
+        setTrips((prev) => {
+          const newTrips = [...prev];
+          for (const ut of userTrips) {
+            if (!newTrips.some((t) => t.id === ut.trip_id)) {
+              newTrips.push({
+                id: ut.trip_id,
+                name: ut.name,
+                destination: ut.destination,
+                status: 'planning',
+                createdBy: 'unknown',
+                createdAt: new Date(ut.joined_at).getTime(),
+              });
+            }
+          }
+          return newTrips;
+        });
+      }
+    } catch (e) {
+      console.error('Failed to fetch user trips:', e);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const addTrip = useCallback((trip: Omit<Trip, 'id' | 'createdAt'>, userId?: string) => {
     const id = `trip_${tripIdCounter++}`;
     const now = Date.now();
     const newTrip: Trip = {
@@ -62,6 +123,22 @@ export function TripsProvider({ children }: { children: React.ReactNode }) {
       createdAt: now,
     };
     setTrips((prev) => [newTrip, ...prev]);
+
+    // Register membership with backend if userId is provided
+    if (userId) {
+      const base = CHAT_API_BASE.replace(/\/$/, '');
+      fetch(`${base}/trips/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trip_id: id,
+          user_id: userId,
+          name: newTrip.name,
+          destination: newTrip.destination,
+        }),
+      }).catch((e) => console.error('Failed to register trip membership:', e));
+    }
+
     return id;
   }, []);
 
@@ -70,7 +147,7 @@ export function TripsProvider({ children }: { children: React.ReactNode }) {
     [trips]
   );
 
-  const joinTrip = useCallback((tripId: string, options?: { name?: string; destination?: string }) => {
+  const joinTrip = useCallback((tripId: string, options?: { name?: string; destination?: string; userId?: string }) => {
     setTrips((prev) => {
       if (prev.some((t) => t.id === tripId)) return prev;
       const now = Date.now();
@@ -85,6 +162,21 @@ export function TripsProvider({ children }: { children: React.ReactNode }) {
       // Remove any existing trip with same id (handles double-call from Strict Mode / deep link)
       return [newTrip, ...prev.filter((t) => t.id !== tripId)];
     });
+
+    // Register membership with backend if userId is provided
+    if (options?.userId) {
+      const base = CHAT_API_BASE.replace(/\/$/, '');
+      fetch(`${base}/trips/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trip_id: tripId,
+          user_id: options.userId,
+          name: options.name,
+          destination: options.destination,
+        }),
+      }).catch((e) => console.error('Failed to register trip membership:', e));
+    }
   }, []);
 
   const updateTrip = useCallback((id: string, updates: Partial<Omit<Trip, 'id' | 'createdAt'>>) => {
@@ -94,7 +186,7 @@ export function TripsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <TripsContext.Provider value={{ trips, addTrip, joinTrip, getTrip, updateTrip }}>
+    <TripsContext.Provider value={{ trips, addTrip, joinTrip, getTrip, updateTrip, fetchUserTrips, isLoading }}>
       {children}
     </TripsContext.Provider>
   );
