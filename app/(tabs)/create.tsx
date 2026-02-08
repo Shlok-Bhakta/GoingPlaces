@@ -98,19 +98,19 @@ export default function CreateTripScreen() {
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <View style={[styles.header, { borderBottomColor: colors.borderLight }]}>
-        <Pressable
-          style={styles.headerLeftBtn}
-          onPress={step > 0 ? handleBack : () => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.replace('/(tabs)');
-          }}>
-          <IconSymbol
-            name={step > 0 ? 'chevron.left' : 'xmark'}
-            size={20}
-            color={colors.text}
-          />
-        </Pressable>
+      <View style={styles.header}>
+        {step > 0 && (
+          <Pressable
+            style={styles.backButton}
+            onPress={handleBack}>
+            <IconSymbol
+              name="chevron.left"
+              size={20}
+              color={colors.text}
+            />
+            <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
+          </Pressable>
+        )}
         <Text style={[styles.headerTitle, { color: colors.text }]}>Create trip</Text>
         <View style={styles.stepDots}>
           {STEPS.map((_, i) => (
@@ -212,25 +212,26 @@ const styles = StyleSheet.create({
     paddingTop: 60,
     paddingHorizontal: Spacing.lg,
     paddingBottom: Spacing.md,
-    borderBottomWidth: 1,
   },
-  headerLeftBtn: {
-    position: 'absolute',
-    top: 56,
-    left: Spacing.lg,
-    zIndex: 1,
-    padding: Spacing.sm,
+  backButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: Spacing.sm,
+    alignSelf: 'flex-start',
+  },
+  backText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 17,
   },
   headerTitle: {
     fontFamily: 'Fraunces_600SemiBold',
-    fontSize: 20,
-    textAlign: 'center',
+    fontSize: 28,
   },
   stepDots: {
     flexDirection: 'row',
-    justifyContent: 'center',
     gap: 8,
-    marginTop: Spacing.md,
+    marginTop: Spacing.sm,
   },
   dot: {
     width: 6,
