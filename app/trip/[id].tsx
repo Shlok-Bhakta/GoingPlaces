@@ -1,10 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dimensions,
   KeyboardAvoidingView,
@@ -17,26 +18,71 @@ import {
   Text,
   TextInput,
   View,
+  Animated as RNAnimated,
+  Linking,
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import PagerView from 'react-native-pager-view';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { MarkdownText } from '@/components/markdown-text';
 import { Colors, Spacing, Radius } from '@/constants/theme';
-import { useTrips, type ItineraryDay, type Itinerary } from '@/contexts/trips-context';
+import { useTrips, type ItineraryDay, type Itinerary, type ItineraryActivity } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
 import { useUser } from '@/contexts/user-context';
 
 const CHAT_WS_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
 const ALBUM_MEDIA_STORAGE_KEY = '@GoingPlaces/album_media';
 
-type ChatMessage = { id: string; content: string; isAI: boolean; name: string; user_id?: string; timestamp?: string };
+type SuggestionOption = {
+  title: string;
+  description?: string | null;
+  location?: string | null;
+  /** Day to add to, e.g. "Day 1", "Day 2", "Friday". Required when adding (not replace). */
+  dayLabel?: string | null;
+  /** Time for the activity when adding, e.g. "6:00 PM", "12:00 PM". */
+  time?: string | null;
+  /** When set, replace this activity in place instead of adding. */
+  replaceActivityId?: string | null;
+  replaceTitle?: string | null;
+};
+type ChatMessage = {
+  id: string;
+  content: string;
+  isAI: boolean;
+  name: string;
+  user_id?: string;
+  timestamp?: string;
+  suggestions?: SuggestionOption[];
+};
 
 const GROUP_GAP_MS = 5 * 60 * 1000; // 5 min
 const DIVIDER_GAP_MS = 30 * 60 * 1000; // 30 min
+
+// Color palette for chat bubbles (warm, pastel, accessible)
+const USER_COLORS = [
+  { bg: '#9FAEC0', text: '#1C1C1E' },     // Deeper blue-gray
+  { bg: '#BFAD9F', text: '#1C1C1E' },     // Deeper warm beige
+  { bg: '#A8BFB0', text: '#1C1C1E' },     // Deeper sage green
+  { bg: '#BFA8BD', text: '#1C1C1E' },     // Deeper lavender
+  { bg: '#A0B8BF', text: '#1C1C1E' },     // Deeper sky blue
+  { bg: '#BFBCA0', text: '#1C1C1E' },     // Deeper sand
+  { bg: '#B0A8BF', text: '#1C1C1E' },     // Deeper periwinkle
+  { bg: '#BFA8B0', text: '#1C1C1E' },     // Deeper dusty rose
+];
+
+// Assign color to user based on their ID/name
+function getUserColor(userId: string | undefined, userName: string): { bg: string; text: string } {
+  const key = userId || userName;
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return USER_COLORS[Math.abs(hash) % USER_COLORS.length];
+}
 
 function formatDividerLabel(iso: string, prevIso?: string): string {
   const d = new Date(iso);
@@ -162,9 +208,9 @@ function createStyles(colors: typeof Colors.light) {
     messageBubbleWrapper: { maxWidth: '85%' },
     messageBubbleWrapperAI: { alignItems: 'flex-start' },
     messageBubbleWrapperUser: { alignItems: 'flex-end' },
-    messageBubble: { padding: Spacing.md, borderRadius: Radius.lg },
+    messageBubble: { padding: Spacing.md, borderRadius: Radius.lg, overflow: 'hidden' },
     bubbleUser: { backgroundColor: colors.tint, borderBottomRightRadius: 4 },
-    bubbleAI: { backgroundColor: '#D1D1D6', borderBottomLeftRadius: 4 },
+    bubbleAI: { backgroundColor: colors.surfaceMuted, borderBottomLeftRadius: 4 },
     messageName: {
       fontFamily: 'DMSans_600SemiBold',
       fontSize: 12,
@@ -186,7 +232,7 @@ function createStyles(colors: typeof Colors.light) {
       paddingHorizontal: Spacing.sm,
     },
     messageText: { fontFamily: 'DMSans_400Regular', fontSize: 15 },
-    messageTextUser: { color: '#FFFFFF' },
+    messageTextUser: { color: '#1C1C1E' },
     messageTextAI: { color: colors.text },
     inputRow: {
       flexDirection: 'row',
@@ -316,6 +362,20 @@ function createStyles(colors: typeof Colors.light) {
       color: colors.textTertiary,
       marginTop: 2,
     },
+    itineraryActivityLocationPressable: {
+      alignSelf: 'flex-start',
+    },
+    itineraryActivityLocationLinkRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginTop: 2,
+    },
+    itineraryActivityLocationLink: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: colors.tint,
+      textDecorationLine: 'underline',
+    },
     albumTabContainer: { flex: 1 },
     addPhotosSection: {
       paddingVertical: Spacing.lg,
@@ -396,9 +456,15 @@ function createStyles(colors: typeof Colors.light) {
     typingBubble: {
       paddingVertical: Spacing.sm,
       paddingHorizontal: Spacing.md,
+      flexDirection: 'column',
+      alignItems: 'flex-start',
+      gap: 6,
+    },
+    typingDotsRow: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
+      minWidth: 60,
     },
     typingDot: {
       width: 6,
@@ -406,6 +472,53 @@ function createStyles(colors: typeof Colors.light) {
       borderRadius: 3,
       backgroundColor: colors.textTertiary,
     },
+    typingStatusText: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: colors.textTertiary,
+      marginTop: 2,
+    },
+    suggestionList: { marginTop: Spacing.md, gap: Spacing.sm },
+    suggestionRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.sm,
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.sm,
+      backgroundColor: 'rgba(0,0,0,0.06)',
+      borderRadius: Radius.md,
+    },
+    suggestionCheck: { marginRight: 2 },
+    suggestionTextWrap: { flex: 1 },
+    suggestionSlot: {
+      fontFamily: 'DMSans_500Medium',
+      fontSize: 11,
+      color: colors.tint,
+      marginBottom: 2,
+    },
+    suggestionTitle: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 14,
+      color: colors.text,
+    },
+    suggestionDesc: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 12,
+      color: colors.textSecondary,
+      marginTop: 2,
+    },
+    addToPlanBtn: {
+      paddingVertical: 6,
+      paddingHorizontal: Spacing.sm,
+      borderRadius: Radius.md,
+      backgroundColor: colors.tint,
+    },
+    addToPlanBtnText: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 12,
+      color: '#FFFFFF',
+    },
+    suggestionAdded: { opacity: 0.7 },
   });
 }
 
@@ -506,19 +619,177 @@ export default function TripDetailScreen() {
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
   const [albumMediaByTripId, setAlbumMediaByTripId] = useState<Record<string, { uri: string; type: 'image' | 'video' }[]>>({});
   const [viewingImageIndex, setViewingImageIndex] = useState<number | null>(null);
+  const [showJoinCodeModal, setShowJoinCodeModal] = useState(false);
+  const [joinCode, setJoinCode] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const albumMediaLoadedRef = useRef(false);
   const [message, setMessage] = useState('');
   const [mentionVisible, setMentionVisible] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [geminiTyping, setGeminiTyping] = useState(false);
+  const [geminiTypingStatus, setGeminiTypingStatus] = useState('');
+  const [usersTyping, setUsersTyping] = useState<Set<string>>(new Set());
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const messagesScrollRef = useRef<ScrollView>(null);
+  const dotAnims = useRef([new RNAnimated.Value(0.3), new RNAnimated.Value(0.3), new RNAnimated.Value(0.3)]).current;
   const [messages, setMessages] = useState<ChatMessage[]>(
     CHAT_WS_BASE ? [] : FALLBACK_MESSAGES
   );
+  const [addedSuggestionKeys, setAddedSuggestionKeys] = useState<Set<string>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
 
+  const flashOpacity = useSharedValue(0);
+
   const userDisplayName = user ? `${user.firstName} ${user.lastName}`.trim() || 'You' : 'You';
+
+  const addSuggestionToPlan = useCallback(
+    (msgId: string, suggestionIndex: number, option: SuggestionOption) => {
+      if (!id || !trip) return;
+      const key = `${msgId}-${suggestionIndex}`;
+      if (addedSuggestionKeys.has(key)) return;
+      const current: Itinerary = trip.itinerary ?? [];
+      const newActivityBase: Omit<ItineraryActivity, 'id'> = {
+        title: option.title,
+        description: option.description ?? undefined,
+        location: option.location ?? undefined,
+      };
+
+      let merged: Itinerary;
+
+      const replaceId = option.replaceActivityId?.trim() || null;
+      const replaceTitle = option.replaceTitle?.trim() || null;
+      const isReplace = !!(replaceId || replaceTitle);
+
+      if (isReplace && current.length > 0) {
+        let replaced = false;
+        merged = current.map((day) => ({
+          ...day,
+          activities: day.activities.map((act) => {
+            const matchById = replaceId && act.id === replaceId;
+            const matchByTitle = replaceTitle && act.title.trim().toLowerCase() === replaceTitle.toLowerCase();
+            if (matchById || matchByTitle) {
+              replaced = true;
+              return {
+                ...newActivityBase,
+                id: act.id,
+                time: act.time,
+              } as ItineraryActivity;
+            }
+            return act;
+          }),
+        }));
+        if (!replaced) {
+          const fallbackDay = option.dayLabel
+            ? current.find(
+                (d) =>
+                  d.title.toLowerCase().includes(option.dayLabel!.toLowerCase()) ||
+                  (d.date && d.date.toLowerCase().includes(option.dayLabel!.toLowerCase()))
+              )
+            : current[0];
+          const targetDay = fallbackDay ?? current[0];
+          merged = current.map((day) =>
+            day.id === targetDay.id
+              ? {
+                  ...day,
+                  activities: [
+                    ...day.activities,
+                    { ...newActivityBase, id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 9)}` } as ItineraryActivity,
+                  ],
+                }
+              : day
+          );
+        }
+      } else {
+        let targetDay: ItineraryDay | undefined;
+        if (option.dayLabel) {
+          const label = option.dayLabel.toLowerCase();
+          targetDay = current.find(
+            (d) =>
+              d.title.toLowerCase().includes(label) ||
+              (d.date && d.date.toLowerCase().includes(label))
+          );
+        }
+        if (!targetDay && current.length > 0) targetDay = current[0];
+        if (!targetDay) {
+          targetDay = {
+            id: 'day-1',
+            dayNumber: 1,
+            title: 'Day 1',
+            activities: [],
+          };
+        }
+        const newActivity: ItineraryActivity = {
+          ...newActivityBase,
+          id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          time: option.time ?? undefined,
+        };
+        merged =
+          current.length === 0
+            ? [{ ...targetDay!, activities: [newActivity] }]
+            : current.map((day) =>
+                day.id === targetDay!.id
+                  ? { ...day, activities: [...day.activities, newActivity] }
+                  : day
+              );
+      }
+
+      updateTrip(id, { itinerary: merged });
+      setAddedSuggestionKeys((prev) => new Set(prev).add(key));
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const base = CHAT_WS_BASE.replace(/\/$/, '');
+      fetch(`${base}/trips/${encodeURIComponent(id)}/itinerary`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          itinerary: merged.map((d) => ({
+            id: d.id,
+            dayNumber: d.dayNumber,
+            title: d.title,
+            date: d.date ?? null,
+            activities: d.activities.map((a) => ({
+              id: a.id,
+              time: a.time ?? null,
+              title: a.title,
+              description: a.description ?? null,
+              location: a.location ?? null,
+            })),
+          })),
+        }),
+      }).catch(() => {});
+    },
+    [id, trip, updateTrip, addedSuggestionKeys]
+  );
+
+  // Wave animation for typing dots when Gemini is typing
+  useEffect(() => {
+    if (!geminiTyping) return;
+    const wave = RNAnimated.loop(
+      RNAnimated.sequence([
+        RNAnimated.parallel([
+          RNAnimated.timing(dotAnims[0], { toValue: 1, duration: 240, useNativeDriver: true }),
+          RNAnimated.timing(dotAnims[1], { toValue: 0.3, duration: 240, useNativeDriver: true }),
+          RNAnimated.timing(dotAnims[2], { toValue: 0.3, duration: 240, useNativeDriver: true }),
+        ]),
+        RNAnimated.parallel([
+          RNAnimated.timing(dotAnims[0], { toValue: 0.3, duration: 240, useNativeDriver: true }),
+          RNAnimated.timing(dotAnims[1], { toValue: 1, duration: 240, useNativeDriver: true }),
+          RNAnimated.timing(dotAnims[2], { toValue: 0.3, duration: 240, useNativeDriver: true }),
+        ]),
+        RNAnimated.parallel([
+          RNAnimated.timing(dotAnims[0], { toValue: 0.3, duration: 240, useNativeDriver: true }),
+          RNAnimated.timing(dotAnims[1], { toValue: 0.3, duration: 240, useNativeDriver: true }),
+          RNAnimated.timing(dotAnims[2], { toValue: 1, duration: 240, useNativeDriver: true }),
+        ]),
+        RNAnimated.parallel([
+          RNAnimated.timing(dotAnims[0], { toValue: 0.3, duration: 240, useNativeDriver: true }),
+          RNAnimated.timing(dotAnims[1], { toValue: 0.3, duration: 240, useNativeDriver: true }),
+          RNAnimated.timing(dotAnims[2], { toValue: 0.3, duration: 240, useNativeDriver: true }),
+        ]),
+      ])
+    );
+    wave.start();
+    return () => wave.stop();
+  }, [geminiTyping]);
 
   // Mention options: Gemini first, then unique names from messages (group chat members)
   useEffect(() => {
@@ -656,16 +927,52 @@ export default function TripDetailScreen() {
           }
         } else if (data.type === 'typing' && data.user_name === 'Gemini') {
           setGeminiTyping(true);
+          setGeminiTypingStatus('');
+        } else if (data.type === 'typing_status' && typeof data.message === 'string') {
+          setGeminiTypingStatus(data.message);
+        } else if (data.type === 'typing' && data.user_name && data.user_id) {
+          // Handle typing from other users (not self, not Gemini)
+          if (data.user_id !== (user?.id ?? '')) {
+            setUsersTyping((prev) => new Set(prev).add(data.user_id));
+            // Clear typing indicator after 3 seconds
+            setTimeout(() => {
+              setUsersTyping((prev) => {
+                const next = new Set(prev);
+                next.delete(data.user_id);
+                return next;
+              });
+            }, 3000);
+          }
         } else if (data.type === 'message' && data.message) {
           const m = data.message;
-          if (m.user_name === 'Gemini') setGeminiTyping(false);
+          if (m.user_name === 'Gemini') {
+            setGeminiTyping(false);
+            setGeminiTypingStatus('');
+          }
+          // Clear typing indicator for this user
+          if (m.user_id) {
+            setUsersTyping((prev) => {
+              const next = new Set(prev);
+              next.delete(m.user_id);
+              return next;
+            });
+          }
           setMessages((prev) => [
             ...prev,
-            { id: String(m.id), content: m.content, isAI: m.is_ai, name: m.user_name || 'Unknown', user_id: m.user_id ?? '', timestamp: m.created_at || new Date().toISOString() },
+            {
+              id: String(m.id),
+              content: m.content,
+              isAI: m.is_ai,
+              name: m.user_name || 'Unknown',
+              user_id: m.user_id ?? '',
+              timestamp: m.created_at || new Date().toISOString(),
+              ...(Array.isArray(m.suggestions) && m.suggestions.length > 0 ? { suggestions: m.suggestions } : {}),
+            },
           ]);
           setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 100);
         } else if (data.type === 'itinerary' && data.itinerary && Array.isArray(data.itinerary) && id) {
           setGeminiTyping(false);
+          setGeminiTypingStatus('');
           const itinerary = normalizeItinerary(data.itinerary);
           if (itinerary.length > 0) {
             updateTrip(id, { itinerary });
@@ -705,6 +1012,32 @@ export default function TripDetailScreen() {
 
   const handleMessageChange = (text: string) => {
     setMessage(text);
+    
+    // Send typing indicator
+    if (text.length > 0 && CHAT_WS_BASE && wsRef.current?.readyState === WebSocket.OPEN) {
+      // Clear existing timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      
+      // Send typing event
+      wsRef.current.send(JSON.stringify({ 
+        type: 'typing',
+        user_id: user?.id ?? '',
+        user_name: userDisplayName,
+      }));
+      
+      // Stop sending typing after 2 seconds of no typing
+      typingTimeoutRef.current = setTimeout(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ 
+            type: 'stop_typing',
+            user_id: user?.id ?? '',
+          }));
+        }
+      }, 2000);
+    }
+    
     const lastAt = text.lastIndexOf('@');
     if (lastAt === -1) {
       setMentionVisible(false);
@@ -843,6 +1176,47 @@ export default function TripDetailScreen() {
     }
   };
 
+  // Fetch join code for trip
+  const fetchJoinCode = async () => {
+    if (!id) return;
+    const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
+    if (!base) return;
+    try {
+      const res = await fetch(`${base}/register-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trip_id: id }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setJoinCode(data.code ?? null);
+      }
+    } catch (error) {
+      console.error('Failed to fetch join code:', error);
+    }
+  };
+
+  const handleCopyCode = async () => {
+    if (!joinCode) return;
+    await Clipboard.setStringAsync(joinCode);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    flashOpacity.value = withSequence(
+      withTiming(1, { duration: 100 }),
+      withTiming(0, { duration: 400 })
+    );
+  };
+
+  const flashStyle = useAnimatedStyle(() => ({
+    opacity: flashOpacity.value,
+  }));
+
+  // Fetch join code when modal opens
+  useEffect(() => {
+    if (showJoinCodeModal && !joinCode) {
+      fetchJoinCode();
+    }
+  }, [showJoinCodeModal]);
+
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: 10 + insets.top }]}>
@@ -870,12 +1244,12 @@ export default function TripDetailScreen() {
           style={styles.settingsBtn}
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.push(`/trip/${id}/settings`);
+            setShowJoinCodeModal(true);
           }}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           accessibilityRole="button"
-          accessibilityLabel="Trip settings">
-          <IconSymbol name="gearshape" size={22} color="#FFFFFF" />
+          accessibilityLabel="Show join code">
+          <IconSymbol name="plus" size={24} color="#FFFFFF" />
         </Pressable>
       </View>
 
@@ -908,14 +1282,18 @@ export default function TripDetailScreen() {
       {activeTab === 'Chat' && (
         <KeyboardAvoidingView
           style={styles.chatContainer}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={0}>
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}>
           <ScrollView
             ref={messagesScrollRef}
             style={styles.messagesScroll}
             contentContainerStyle={styles.messagesContent}
             showsVerticalScrollIndicator={false}
             keyboardDismissMode="on-drag"
+            onContentSizeChange={() => {
+              // Auto-scroll to bottom when content changes (new message, keyboard opens, etc)
+              messagesScrollRef.current?.scrollToEnd({ animated: true });
+            }}
           >
             {(() => {
               const currentUserId = user?.id ?? '';
@@ -955,6 +1333,9 @@ export default function TripDetailScreen() {
                     }
                     const { msg, showName, groupedWithNext } = item;
                     const fromMe = isFromMe(msg);
+                    const isGemini = msg.name === 'Gemini' || msg.isAI;
+                    const userColor = fromMe ? null : getUserColor(msg.user_id, msg.name);
+                    
                     return (
                       <Animated.View
                         key={msg.id}
@@ -978,24 +1359,101 @@ export default function TripDetailScreen() {
                               {msg.name}
                             </Text>
                           )}
-                          <View
-                            style={[
-                              styles.messageBubble,
-                              fromMe ? styles.bubbleUser : styles.bubbleAI,
-                            ]}>
-                            <MarkdownText
-                              baseStyle={StyleSheet.flatten([
-                                styles.messageText,
-                                fromMe ? styles.messageTextUser : styles.messageTextAI,
-                              ])}
-                              codeStyle={
-                                fromMe
-                                  ? { backgroundColor: 'rgba(255,255,255,0.25)' }
-                                  : undefined
-                              }
-                            >
-                              {msg.content}
-                            </MarkdownText>
+                          <View style={{ position: 'relative' }}>
+                            <View
+                              style={[
+                                styles.messageBubble,
+                                fromMe 
+                                  ? styles.bubbleUser 
+                                  : {
+                                      backgroundColor: userColor?.bg,
+                                      borderBottomLeftRadius: 4,
+                                    },
+                                isGemini && { marginBottom: 3 },
+                              ]}>
+                              <MarkdownText
+                                baseStyle={StyleSheet.flatten([
+                                  styles.messageText,
+                                  fromMe 
+                                    ? styles.messageTextUser 
+                                    : { color: userColor?.text || colors.text },
+                                ])}
+                                codeStyle={
+                                  fromMe
+                                    ? { backgroundColor: 'rgba(0,0,0,0.15)' }
+                                    : { backgroundColor: 'rgba(0,0,0,0.1)' }
+                                }
+                              >
+                                {msg.content}
+                              </MarkdownText>
+                              {!fromMe && msg.suggestions && msg.suggestions.length > 0 && (
+                                <View style={styles.suggestionList}>
+                                  {msg.suggestions.map((opt, idx) => {
+                                    const suggestionKey = `${msg.id}-${idx}`;
+                                    const added = addedSuggestionKeys.has(suggestionKey);
+                                    return (
+                                      <View
+                                        key={suggestionKey}
+                                        style={[
+                                          styles.suggestionRow,
+                                          added && styles.suggestionAdded,
+                                        ]}>
+                                        <IconSymbol
+                                          name="checkmark"
+                                          size={18}
+                                          color={colors.tint}
+                                          style={styles.suggestionCheck}
+                                        />
+                                        <View style={styles.suggestionTextWrap}>
+                                          {(opt.dayLabel || opt.time) && (
+                                            <Text style={styles.suggestionSlot} numberOfLines={1}>
+                                              {[opt.dayLabel, opt.time].filter(Boolean).join(' · ')}
+                                            </Text>
+                                          )}
+                                          <Text style={styles.suggestionTitle}>{opt.title}</Text>
+                                          {opt.description ? (
+                                            <Text style={styles.suggestionDesc} numberOfLines={2}>
+                                              {opt.description}
+                                            </Text>
+                                          ) : null}
+                                        </View>
+                                        <Pressable
+                                          onPress={() =>
+                                            addSuggestionToPlan(msg.id, idx, opt)
+                                          }
+                                          disabled={added}
+                                          style={({ pressed }) => [
+                                            styles.addToPlanBtn,
+                                            (pressed || added) && { opacity: 0.8 },
+                                          ]}>
+                                          <Text style={styles.addToPlanBtnText}>
+                                            {added
+                                              ? opt.replaceActivityId || opt.replaceTitle
+                                                ? 'Replaced'
+                                                : 'Added'
+                                              : opt.replaceActivityId || opt.replaceTitle
+                                                ? 'Replace with this'
+                                                : 'Add to plan'}
+                                          </Text>
+                                        </Pressable>
+                                      </View>
+                                    );
+                                  })}
+                                </View>
+                              )}
+                            </View>
+                            {isGemini && (
+                              <LinearGradient
+                                colors={['#FF6B6B', '#FFD93D', '#6BCF7F', '#4D96FF', '#9D4EDD', '#FF6B6B']}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 0 }}
+                                style={{
+                                  height: 3,
+                                  borderBottomLeftRadius: Radius.lg,
+                                  borderBottomRightRadius: Radius.lg,
+                                }}
+                              />
+                            )}
                           </View>
                         </View>
                       </Animated.View>
@@ -1005,14 +1463,70 @@ export default function TripDetailScreen() {
                     <View style={[styles.messageRow, styles.messageRowAI]}>
                       <View style={[styles.messageBubbleWrapper, styles.messageBubbleWrapperAI]}>
                         <Text style={[styles.messageName, styles.messageNameLeft]}>Gemini</Text>
-                        <View style={[styles.messageBubble, styles.bubbleAI, styles.typingBubble]}>
-                          <View style={styles.typingDot} />
-                          <View style={styles.typingDot} />
-                          <View style={styles.typingDot} />
+                        <View style={{ position: 'relative' }}>
+                          <View
+                            style={[
+                              styles.messageBubble,
+                              {
+                                backgroundColor: getUserColor('gemini', 'Gemini').bg,
+                                borderBottomLeftRadius: 4,
+                                marginBottom: 3,
+                              },
+                              styles.typingBubble,
+                            ]}>
+                            <View style={styles.typingDotsRow}>
+                              {[0, 1, 2].map((i) => (
+                                <RNAnimated.View
+                                  key={i}
+                                  style={[styles.typingDot, { opacity: dotAnims[i] }]}
+                                />
+                              ))}
+                            </View>
+                            {geminiTypingStatus ? (
+                              <Text style={styles.typingStatusText}>{geminiTypingStatus}</Text>
+                            ) : null}
+                          </View>
+                          <LinearGradient
+                            colors={['#FF6B6B', '#FFD93D', '#6BCF7F', '#4D96FF', '#9D4EDD', '#FF6B6B']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={{
+                              height: 3,
+                              borderBottomLeftRadius: Radius.lg,
+                              borderBottomRightRadius: Radius.lg,
+                            }}
+                          />
                         </View>
                       </View>
                     </View>
                   )}
+                  {Array.from(usersTyping).map((userId) => {
+                    const typingUser = messages.find((m) => m.user_id === userId);
+                    if (!typingUser) return null;
+                    const userColor = getUserColor(userId, typingUser.name);
+                    return (
+                      <View key={userId} style={[styles.messageRow, styles.messageRowAI]}>
+                        <View style={[styles.messageBubbleWrapper, styles.messageBubbleWrapperAI]}>
+                          <Text style={[styles.messageName, styles.messageNameLeft]}>
+                            {typingUser.name}
+                          </Text>
+                          <View
+                            style={[
+                              styles.messageBubble,
+                              {
+                                backgroundColor: userColor.bg,
+                                borderBottomLeftRadius: 4,
+                              },
+                              styles.typingBubble,
+                            ]}>
+                            <View style={styles.typingDot} />
+                            <View style={styles.typingDot} />
+                            <View style={styles.typingDot} />
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })}
                 </>
               );
             })()}
@@ -1050,6 +1564,12 @@ export default function TripDetailScreen() {
               placeholderTextColor={colors.textTertiary}
               value={message}
               onChangeText={handleMessageChange}
+              onFocus={() => {
+                // Scroll to bottom when input is focused
+                setTimeout(() => {
+                  messagesScrollRef.current?.scrollToEnd({ animated: true });
+                }, 100);
+              }}
               multiline
               maxLength={500}
               onKeyPress={(e) => {
@@ -1102,9 +1622,32 @@ export default function TripDetailScreen() {
                         {activity.description != null && activity.description !== '' && (
                           <Text style={styles.itineraryActivityDesc}>{activity.description}</Text>
                         )}
-                        {activity.location != null && activity.location !== '' && (
-                          <Text style={styles.itineraryActivityLocation}>{activity.location}</Text>
-                        )}
+                        {activity.location != null && activity.location !== '' && (() => {
+                          const loc = activity.location!;
+                          // Only link for specific places with street address (number + comma); not cities/areas like "San Francisco", "Napa"
+                          const isAddress = /,\s*/.test(loc) && /\d/.test(loc);
+                          if (isAddress) {
+                            return (
+                              <Pressable
+                                onPress={() => {
+                                  const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc)}`;
+                                  Linking.openURL(url);
+                                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                }}
+                                style={({ pressed }: { pressed: boolean }) => [
+                                  { opacity: pressed ? 0.7 : 1 },
+                                  styles.itineraryActivityLocationPressable,
+                                ]}
+                              >
+                                <View style={styles.itineraryActivityLocationLinkRow}>
+                                  <IconSymbol name="map.fill" size={14} color={colors.tint} style={{ marginRight: 6 }} />
+                                  <Text style={styles.itineraryActivityLocationLink}>{loc}</Text>
+                                </View>
+                              </Pressable>
+                            );
+                          }
+                          return <Text style={styles.itineraryActivityLocation}>{loc}</Text>;
+                        })()}
                       </View>
                     </View>
                   ))}
@@ -1247,6 +1790,124 @@ export default function TripDetailScreen() {
             onClose={() => setViewingImageIndex(null)}
           />
         </GestureHandlerRootView>
+      </Modal>
+
+      <Modal
+        visible={showJoinCodeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowJoinCodeModal(false)}>
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+          onPress={() => setShowJoinCodeModal(false)}>
+          <Pressable
+            style={{
+              backgroundColor: colors.surface,
+              borderRadius: Radius.lg,
+              padding: Spacing.xl,
+              width: '80%',
+              maxWidth: 400,
+              alignItems: 'center',
+            }}
+            onPress={(e) => e.stopPropagation()}>
+            <Text
+              style={{
+                fontFamily: 'Fraunces_600SemiBold',
+                fontSize: 22,
+                color: colors.text,
+                marginBottom: Spacing.sm,
+              }}>
+              Invite to Trip
+            </Text>
+            <Text
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 15,
+                color: colors.textSecondary,
+                textAlign: 'center',
+                marginBottom: Spacing.lg,
+              }}>
+              Share this code with others to join this trip
+            </Text>
+            <Pressable
+              onPress={handleCopyCode}
+              disabled={!joinCode}
+              style={({ pressed }) => ({
+                backgroundColor: pressed ? colors.surfaceMuted : colors.backgroundElevated,
+                borderRadius: Radius.md,
+                padding: Spacing.lg,
+                width: '100%',
+                alignItems: 'center',
+                marginBottom: Spacing.md,
+                overflow: 'hidden',
+              })}>
+              {joinCode ? (
+                <>
+                  <Text
+                    style={{
+                      fontFamily: 'DMSans_700Bold',
+                      fontSize: 36,
+                      color: colors.tint,
+                      letterSpacing: 8,
+                    }}>
+                    {joinCode}
+                  </Text>
+                  <Animated.View
+                    style={[
+                      StyleSheet.absoluteFill,
+                      {
+                        backgroundColor: '#4ade80',
+                        borderRadius: Radius.md,
+                      },
+                      flashStyle,
+                    ]}
+                    pointerEvents="none"
+                  />
+                </>
+              ) : (
+                <Text
+                  style={{
+                    fontFamily: 'DMSans_400Regular',
+                    fontSize: 16,
+                    color: colors.textSecondary,
+                  }}>
+                  Loading...
+                </Text>
+              )}
+            </Pressable>
+            <Text
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 13,
+                color: colors.textTertiary,
+                textAlign: 'center',
+              }}>
+              {joinCode ? 'Tap the code to copy' : ''}
+            </Text>
+            <Pressable
+              onPress={() => setShowJoinCodeModal(false)}
+              style={({ pressed }) => ({
+                marginTop: Spacing.lg,
+                paddingVertical: Spacing.sm,
+                paddingHorizontal: Spacing.md,
+                opacity: pressed ? 0.6 : 1,
+              })}>
+              <Text
+                style={{
+                  fontFamily: 'DMSans_600SemiBold',
+                  fontSize: 16,
+                  color: colors.accent,
+                }}>
+                Close
+              </Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
       </Modal>
     </View>
   );
