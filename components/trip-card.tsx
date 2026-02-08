@@ -185,11 +185,12 @@ const styles = StyleSheet.create({
   coverAttribution: {
     position: 'absolute',
     bottom: 4,
-    left: Spacing.sm,
     right: Spacing.sm,
+    left: undefined,
     fontFamily: 'DMSans_400Regular',
     fontSize: 9,
     color: 'rgba(255,255,255,0.7)',
+    textAlign: 'right',
   },
   content: {
     position: 'absolute',
