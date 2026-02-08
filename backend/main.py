@@ -47,6 +47,13 @@ from db import (
     add_trip_media,
     get_trip_media,
     create_user as db_create_user,
+    add_expense,
+    get_expenses,
+    get_expense_splits,
+    calculate_trip_balances,
+    get_trip_members,
+    update_expense,
+    delete_expense,
 )
 from google_places import (
     search_places as gp_search_places,
@@ -85,6 +92,10 @@ app.add_middleware(
 # Setup uploads directory
 UPLOADS_DIR = Path(__file__).parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
+
+# Setup receipts directory
+RECEIPTS_DIR = Path(__file__).parent / "receipts"
+RECEIPTS_DIR.mkdir(exist_ok=True)
 
 # trip_id -> set of active WebSocket connections
 rooms: dict[str, set[WebSocket]] = {}
@@ -905,6 +916,209 @@ def _extract_itinerary_from_response(text: str) -> list[dict] | None:
     else:
         raw = text.strip()
     return _parse_itinerary_json(raw)
+
+
+# --- Expenses and Bill Splitting ---
+
+
+@app.get("/trips/{trip_id}/expenses")
+def api_get_expenses(trip_id: str) -> list[dict[str, Any]]:
+    """Get all expenses for a trip."""
+    return get_expenses(trip_id)
+
+
+@app.get("/trips/{trip_id}/members")
+def api_get_trip_members(trip_id: str) -> list[dict[str, Any]]:
+    """Get all members of a trip with their user details."""
+    return get_trip_members(trip_id)
+
+
+class AddExpenseBody(BaseModel):
+    paid_by_user_id: str
+    description: str
+    amount: float
+    expense_date: str
+    currency: str = "USD"
+    category: str | None = None
+    receipt_image_url: str | None = None
+    splits: list[dict[str, Any]] | None = None  # [{"user_id": str, "amount": float}]
+
+
+@app.post("/trips/{trip_id}/expenses")
+def api_add_expense(trip_id: str, body: AddExpenseBody) -> dict[str, Any]:
+    """Add an expense to a trip with optional splits."""
+    splits_tuples = None
+    if body.splits:
+        splits_tuples = [(s["user_id"], float(s["amount"])) for s in body.splits]
+
+    expense = add_expense(
+        trip_id=trip_id,
+        paid_by_user_id=body.paid_by_user_id,
+        description=body.description,
+        amount=body.amount,
+        expense_date=body.expense_date,
+        currency=body.currency,
+        category=body.category,
+        receipt_image_url=body.receipt_image_url,
+        splits=splits_tuples,
+    )
+    return expense
+
+
+class UpdateExpenseBody(BaseModel):
+    description: str | None = None
+    amount: float | None = None
+    expense_date: str | None = None
+
+
+@app.patch("/expenses/{expense_id}")
+def api_update_expense(expense_id: str, body: UpdateExpenseBody) -> dict[str, Any]:
+    """Update an expense."""
+    updated = update_expense(
+        expense_id=expense_id,
+        description=body.description,
+        amount=body.amount,
+        expense_date=body.expense_date,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Expense not found or no changes")
+    return {"success": True}
+
+
+@app.delete("/expenses/{expense_id}")
+def api_delete_expense(expense_id: str) -> dict[str, Any]:
+    """Delete an expense and its splits."""
+    deleted = delete_expense(expense_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    return {"success": True}
+
+
+@app.get("/trips/{trip_id}/balances")
+def api_get_trip_balances(trip_id: str) -> dict[str, Any]:
+    """Calculate and return trip balances and suggested settlements."""
+    return calculate_trip_balances(trip_id)
+
+
+@app.post("/trips/{trip_id}/receipts/upload")
+async def upload_receipt_and_ocr(
+    trip_id: str,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """
+    Upload a receipt image, save it, and use OpenRouter Gemini 2.0 Flash for OCR.
+    Returns parsed receipt data (description, amount, date, items).
+    """
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
+
+    # Generate unique filename
+    file_ext = Path(file.filename or "receipt.jpg").suffix
+    unique_filename = f"{uuid.uuid4()}{file_ext}"
+    file_path = RECEIPTS_DIR / unique_filename
+
+    # Save file
+    content = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    # Convert image to base64 for OpenRouter
+    import base64
+
+    with open(file_path, "rb") as img_file:
+        img_data = base64.b64encode(img_file.read()).decode("utf-8")
+
+    # Determine mime type
+    mime_type = file.content_type or "image/jpeg"
+    if not mime_type.startswith("image/"):
+        mime_type = "image/jpeg"
+
+    # Call OpenRouter with Gemini 2.0 Flash for OCR
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+
+        response = client.chat.completions.create(
+            model="google/gemini-2.0-flash-001",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": """Analyze this receipt and extract the following information in JSON format:
+{
+  "merchant": "store/restaurant name",
+  "total": 0.00,
+  "date": "YYYY-MM-DD",
+  "items": [
+    {"name": "item name", "price": 0.00, "quantity": 1}
+  ],
+  "currency": "USD"
+}
+
+Return ONLY valid JSON, no other text.""",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{img_data}"},
+                        },
+                    ],
+                }
+            ],
+            max_tokens=1000,
+            temperature=0.2,
+        )
+
+        result_text = response.choices[0].message.content or ""
+
+        # Try to parse JSON from response
+        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", result_text)
+        if json_match:
+            result_text = json_match.group(1).strip()
+
+        try:
+            parsed_data = json.loads(result_text)
+        except json.JSONDecodeError:
+            parsed_data = {
+                "merchant": "Unknown",
+                "total": 0.0,
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "items": [],
+                "currency": "USD",
+            }
+
+        receipt_url = f"/receipts/{unique_filename}"
+
+        return {
+            "receipt_url": receipt_url,
+            "receipt_data": parsed_data,
+        }
+
+    except Exception as e:
+        logger.exception("Receipt OCR failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
+
+
+@app.get("/receipts/{filename}")
+async def serve_receipt(filename: str) -> FileResponse:
+    """Serve uploaded receipt images."""
+    file_path = RECEIPTS_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    return FileResponse(file_path)
+
+
+@app.get("/trips/{trip_id}/receipts")
+def api_get_trip_receipts(trip_id: str) -> list[dict[str, Any]]:
+    """Get all receipts (expenses with receipt_image_url) for a trip."""
+    expenses = get_expenses(trip_id)
+    receipts = [e for e in expenses if e.get("receipt_image_url")]
+    return receipts
 
 
 def _parse_itinerary_json(raw: str) -> list[dict] | None:

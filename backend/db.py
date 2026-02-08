@@ -376,13 +376,27 @@ def _register_code_conn(conn: sqlite3.Connection, trip_id: str) -> str:
 
 
 def get_trip_members(trip_id: str) -> list[dict[str, Any]]:
-    """Return list of { user_id } for trip (for future expansion with names)."""
+    """Return list of trip members with user details. Only includes users that exist in users table."""
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT user_id FROM trip_members WHERE trip_id = ? ORDER BY joined_at ASC",
+            """
+            SELECT tm.user_id, u.first_name, u.last_name, u.email
+            FROM trip_members tm
+            JOIN users u ON tm.user_id = u.id
+            WHERE tm.trip_id = ?
+            ORDER BY tm.joined_at ASC
+            """,
             (trip_id,),
         ).fetchall()
-    return [{"user_id": r["user_id"]} for r in rows]
+    return [
+        {
+            "user_id": r["user_id"],
+            "first_name": r["first_name"],
+            "last_name": r["last_name"],
+            "email": r["email"],
+        }
+        for r in rows
+    ]
 
 
 def get_trips_for_user(user_id: str) -> list[dict[str, Any]]:
@@ -726,6 +740,73 @@ def get_expenses(trip_id: str) -> list[dict[str, Any]]:
     return [_row_to_expense(r) for r in rows]
 
 
+def update_expense(
+    expense_id: str,
+    description: str | None = None,
+    amount: float | None = None,
+    expense_date: str | None = None,
+) -> bool:
+    """Update an expense and recalculate splits proportionally if amount changed. Returns True if updated."""
+    with get_db() as conn:
+        # If amount is being changed, we need to recalculate splits
+        if amount is not None:
+            # Get current expense amount and splits
+            expense_row = conn.execute(
+                "SELECT amount FROM expenses WHERE id = ?", (expense_id,)
+            ).fetchone()
+            if not expense_row:
+                return False
+
+            old_amount = float(expense_row["amount"])
+
+            # Get all splits for this expense
+            split_rows = conn.execute(
+                "SELECT id, amount FROM expense_splits WHERE expense_id = ?",
+                (expense_id,),
+            ).fetchall()
+
+            # Calculate the ratio to adjust splits
+            if old_amount > 0 and len(split_rows) > 0:
+                ratio = amount / old_amount
+
+                # Update each split proportionally
+                for split in split_rows:
+                    new_split_amount = float(split["amount"]) * ratio
+                    conn.execute(
+                        "UPDATE expense_splits SET amount = ? WHERE id = ?",
+                        (new_split_amount, split["id"]),
+                    )
+
+        # Now update the expense itself
+        updates = []
+        params = []
+
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+        if amount is not None:
+            updates.append("amount = ?")
+            params.append(amount)
+        if expense_date is not None:
+            updates.append("expense_date = ?")
+            params.append(expense_date)
+
+        if not updates:
+            return False
+
+        params.append(expense_id)
+        query = f"UPDATE expenses SET {', '.join(updates)} WHERE id = ?"
+        cur = conn.execute(query, params)
+        return cur.rowcount > 0
+
+
+def delete_expense(expense_id: str) -> bool:
+    """Delete an expense and its splits. Returns True if deleted."""
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+        return cur.rowcount > 0
+
+
 def _row_to_expense(r: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": r["id"],
@@ -800,4 +881,123 @@ def get_user_balance(trip_id: str, user_id: str) -> dict[str, float]:
     return {
         "owes": float(owes_row["owes"] or 0),
         "paid": float(paid_row["paid"] or 0),
+    }
+
+
+def get_expense_splits(expense_id: str) -> list[dict[str, Any]]:
+    """Get all splits for an expense."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT es.*, u.first_name, u.last_name 
+            FROM expense_splits es
+            JOIN users u ON es.user_id = u.id
+            WHERE es.expense_id = ?
+            """,
+            (expense_id,),
+        ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "expense_id": r["expense_id"],
+            "user_id": r["user_id"],
+            "first_name": r["first_name"],
+            "last_name": r["last_name"],
+            "amount": float(r["amount"]),
+            "is_settled": bool(r["is_settled"]),
+            "settled_at": r["settled_at"],
+        }
+        for r in rows
+    ]
+
+
+def calculate_trip_balances(trip_id: str) -> dict[str, Any]:
+    """
+    Calculate who owes whom for a trip. Returns a dict with:
+    - balances: {user_id: net_balance} (positive = owed, negative = owes)
+    - settlements: [(from_user_id, to_user_id, amount, from_name, to_name)]
+    Uses greedy algorithm to minimize number of transactions.
+    """
+    with get_db() as conn:
+        # Get all expenses for trip
+        expenses = conn.execute(
+            "SELECT id, paid_by_user_id, amount FROM expenses WHERE trip_id = ?",
+            (trip_id,),
+        ).fetchall()
+
+        # Get all splits
+        splits = conn.execute(
+            """
+            SELECT es.user_id, es.amount, es.is_settled
+            FROM expense_splits es
+            JOIN expenses e ON es.expense_id = e.id
+            WHERE e.trip_id = ?
+            """,
+            (trip_id,),
+        ).fetchall()
+
+        # Get user names
+        members = conn.execute(
+            """
+            SELECT DISTINCT u.id, u.first_name, u.last_name
+            FROM users u
+            JOIN trip_members tm ON tm.user_id = u.id
+            WHERE tm.trip_id = ?
+            """,
+            (trip_id,),
+        ).fetchall()
+
+    user_names = {r["id"]: f"{r['first_name']} {r['last_name']}" for r in members}
+
+    # Calculate net balance for each user (what they paid - what they owe)
+    balances: dict[str, float] = {}
+
+    # Add what each user paid
+    for exp in expenses:
+        user_id = exp["paid_by_user_id"]
+        balances[user_id] = balances.get(user_id, 0.0) + float(exp["amount"])
+
+    # Subtract what each user owes (only unsettled)
+    for split in splits:
+        if not split["is_settled"]:
+            user_id = split["user_id"]
+            balances[user_id] = balances.get(user_id, 0.0) - float(split["amount"])
+
+    # Calculate minimal settlements using greedy algorithm
+    settlements = []
+    creditors = [(uid, bal) for uid, bal in balances.items() if bal > 0.01]
+    debtors = [(uid, -bal) for uid, bal in balances.items() if bal < -0.01]
+
+    creditors.sort(key=lambda x: x[1], reverse=True)
+    debtors.sort(key=lambda x: x[1], reverse=True)
+
+    i, j = 0, 0
+    while i < len(creditors) and j < len(debtors):
+        creditor_id, credit = creditors[i]
+        debtor_id, debt = debtors[j]
+
+        amount = min(credit, debt)
+        if amount > 0.01:
+            settlements.append(
+                (
+                    debtor_id,
+                    creditor_id,
+                    round(amount, 2),
+                    user_names.get(debtor_id, "Unknown"),
+                    user_names.get(creditor_id, "Unknown"),
+                )
+            )
+
+        creditors[i] = (creditor_id, credit - amount)
+        debtors[j] = (debtor_id, debt - amount)
+
+        if creditors[i][1] < 0.01:
+            i += 1
+        if debtors[j][1] < 0.01:
+            j += 1
+
+    return {
+        "balances": {uid: round(bal, 2) for uid, bal in balances.items()},
+        "user_names": user_names,
+        "settlements": settlements,
     }

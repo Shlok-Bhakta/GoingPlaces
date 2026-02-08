@@ -36,6 +36,33 @@ import { useUser } from '@/contexts/user-context';
 const CHAT_WS_BASE = process.env.EXPO_PUBLIC_CHAT_WS_BASE ?? 'http://localhost:8000';
 const ALBUM_MEDIA_STORAGE_KEY = '@GoingPlaces/album_media';
 
+type Expense = {
+  id: string;
+  trip_id: string;
+  paid_by_user_id: string;
+  description: string;
+  amount: number;
+  currency: string;
+  category?: string | null;
+  receipt_image_url?: string | null;
+  created_at: string;
+  expense_date: string;
+};
+
+type Settlement = {
+  from_user_id: string;
+  to_user_id: string;
+  amount: number;
+  from_name: string;
+  to_name: string;
+};
+
+type Balances = {
+  balances: Record<string, number>;
+  user_names: Record<string, string>;
+  settlements: [string, string, number, string, string][];
+};
+
 type SuggestionOption = {
   title: string;
   description?: string | null;
@@ -519,6 +546,99 @@ function createStyles(colors: typeof Colors.light) {
       color: '#FFFFFF',
     },
     suggestionAdded: { opacity: 0.7 },
+    costsUploadSection: {
+      paddingVertical: Spacing.lg,
+      paddingHorizontal: Spacing.lg,
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexShrink: 0,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.borderLight,
+    },
+    costsUploadButton: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: Spacing.lg,
+      paddingHorizontal: Spacing.xl,
+      borderRadius: Radius.xl,
+      minWidth: 200,
+      overflow: 'hidden',
+    },
+    costsUploadLabel: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 16,
+      color: '#FFFFFF',
+      marginTop: Spacing.sm,
+    },
+    settlementCard: {
+      backgroundColor: colors.surface,
+      borderRadius: Radius.lg,
+      padding: Spacing.lg,
+      marginBottom: Spacing.md,
+      borderWidth: 1,
+      borderColor: colors.borderLight,
+    },
+    settlementRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.sm,
+    },
+    settlementAvatar: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    settlementText: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 14,
+      color: colors.text,
+      marginLeft: Spacing.sm,
+      flex: 1,
+    },
+    settlementAmount: {
+      fontFamily: 'DMSans_700Bold',
+      fontSize: 18,
+      color: colors.tint,
+    },
+    expenseCard: {
+      backgroundColor: colors.surface,
+      borderRadius: Radius.lg,
+      padding: Spacing.md,
+      marginBottom: Spacing.md,
+      borderWidth: 1,
+      borderColor: colors.borderLight,
+    },
+    expenseHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      marginBottom: Spacing.sm,
+    },
+    expenseDescription: {
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 15,
+      color: colors.text,
+      flex: 1,
+    },
+    expenseAmount: {
+      fontFamily: 'DMSans_700Bold',
+      fontSize: 16,
+      color: colors.tint,
+    },
+    expenseMeta: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 13,
+      color: colors.textSecondary,
+      marginTop: 4,
+    },
+    receiptThumb: {
+      width: 60,
+      height: 60,
+      borderRadius: Radius.md,
+      marginTop: Spacing.sm,
+    },
   });
 }
 
@@ -590,6 +710,626 @@ function ImageViewerOverlay({
           <IconSymbol name="xmark" size={20} color="#FFFFFF" />
         </Pressable>
       </View>
+    </View>
+  );
+}
+
+// CostsTab Component
+function CostsTab({ 
+  tripId, 
+  colors, 
+  styles, 
+  user,
+  trip,
+}: { 
+  tripId: string; 
+  colors: typeof Colors.light; 
+  styles: ReturnType<typeof createStyles>;
+  user: ReturnType<typeof useUser>['user'];
+  trip: any;
+}) {
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [balances, setBalances] = useState<Balances | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [editForm, setEditForm] = useState({ description: '', amount: '', date: '' });
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const loadExpenses = async () => {
+    if (!CHAT_WS_BASE) return;
+    setLoading(true);
+    try {
+      const base = CHAT_WS_BASE.replace(/\/$/, '');
+      const [expRes, balRes] = await Promise.all([
+        fetch(`${base}/trips/${encodeURIComponent(tripId)}/expenses`),
+        fetch(`${base}/trips/${encodeURIComponent(tripId)}/balances`),
+      ]);
+      if (expRes.ok) {
+        const expData = await expRes.json();
+        setExpenses(expData);
+      }
+      if (balRes.ok) {
+        const balData = await balRes.json();
+        setBalances(balData);
+      }
+    } catch (error) {
+      console.error('Failed to load expenses:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadExpenses();
+  }, [tripId]);
+
+  // Web: hidden file input for receipt upload
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.style.display = 'none';
+    input.onchange = async (e: Event) => {
+      const target = e.target as HTMLInputElement;
+      const file = target.files?.[0];
+      target.value = '';
+      if (!file) return;
+
+      setUploading(true);
+      try {
+        const base = CHAT_WS_BASE.replace(/\/$/, '');
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const ocrRes = await fetch(`${base}/trips/${encodeURIComponent(tripId)}/receipts/upload`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (ocrRes.ok) {
+          const ocrData = await ocrRes.json();
+          const { receipt_url, receipt_data } = ocrData;
+
+          // Get trip members to split the bill
+          const membersRes = await fetch(`${base}/trips/${encodeURIComponent(tripId)}/members`);
+          let members: any[] = [];
+          if (membersRes.ok) {
+            members = await membersRes.json();
+          }
+
+          // Create expense with equal splits
+          const splitAmount = members.length > 0 ? receipt_data.total / members.length : receipt_data.total;
+          const splits = members.map((m: any) => ({
+            user_id: m.user_id,
+            amount: splitAmount,
+          }));
+
+          const expenseRes = await fetch(`${base}/trips/${encodeURIComponent(tripId)}/expenses`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              paid_by_user_id: user?.id || '',
+              description: receipt_data.merchant || 'Receipt',
+              amount: receipt_data.total,
+              expense_date: receipt_data.date || new Date().toISOString().split('T')[0],
+              currency: receipt_data.currency || 'USD',
+              receipt_image_url: `${base}${receipt_url}`,
+              splits,
+            }),
+          });
+
+          if (expenseRes.ok) {
+            await loadExpenses();
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }
+        }
+      } catch (error) {
+        console.error('Receipt upload failed:', error);
+      } finally {
+        setUploading(false);
+      }
+    };
+    document.body.appendChild(input);
+    fileInputRef.current = input;
+    return () => {
+      document.body.removeChild(input);
+      fileInputRef.current = null;
+    };
+  }, [tripId, user]);
+
+  const handleUploadReceipt = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (Platform.OS === 'web') {
+      fileInputRef.current?.click();
+      return;
+    }
+
+    // Native implementation - show action sheet to choose camera or library
+    const ImagePicker = require('expo-image-picker');
+    
+    // Ask user: camera or library
+    const choice = await new Promise<'camera' | 'library' | null>((resolve) => {
+      if (Platform.OS === 'ios') {
+        // iOS ActionSheet
+        const ActionSheetIOS = require('react-native').ActionSheetIOS;
+        ActionSheetIOS.showActionSheetWithOptions(
+          {
+            options: ['Cancel', 'Take Photo', 'Choose from Library'],
+            cancelButtonIndex: 0,
+          },
+          (buttonIndex: number) => {
+            if (buttonIndex === 1) resolve('camera');
+            else if (buttonIndex === 2) resolve('library');
+            else resolve(null);
+          }
+        );
+      } else {
+        // Android Alert
+        const Alert = require('react-native').Alert;
+        Alert.alert(
+          'Upload Receipt',
+          'Choose an option',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
+            { text: 'Take Photo', onPress: () => resolve('camera') },
+            { text: 'Choose from Library', onPress: () => resolve('library') },
+          ],
+          { cancelable: true, onDismiss: () => resolve(null) }
+        );
+      }
+    });
+
+    if (!choice) return;
+
+    let result;
+    if (choice === 'camera') {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') return;
+      
+      result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.8,
+      });
+    } else {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') return;
+      
+      result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: false,
+        quality: 0.8,
+      });
+    }
+
+    if (result.canceled) return;
+
+    setUploading(true);
+    try {
+      const base = CHAT_WS_BASE.replace(/\/$/, '');
+      const formData = new FormData();
+      const uri = result.assets[0].uri;
+      const filename = uri.split('/').pop() || 'receipt.jpg';
+      const match = /\.(\w+)$/.exec(filename);
+      const type = match ? `image/${match[1]}` : 'image/jpeg';
+
+      // @ts-ignore - FormData in React Native accepts uri
+      formData.append('file', {
+        uri,
+        name: filename,
+        type,
+      });
+
+      const ocrRes = await fetch(`${base}/trips/${encodeURIComponent(tripId)}/receipts/upload`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      if (ocrRes.ok) {
+        const ocrData = await ocrRes.json();
+        const { receipt_url, receipt_data } = ocrData;
+
+        // Get trip members to split the bill
+        const membersRes = await fetch(`${base}/trips/${encodeURIComponent(tripId)}/members`);
+        let members: any[] = [];
+        if (membersRes.ok) {
+          members = await membersRes.json();
+        }
+
+        // Create expense with equal splits
+        const splitAmount = members.length > 0 ? receipt_data.total / members.length : receipt_data.total;
+        const splits = members.map((m: any) => ({
+          user_id: m.user_id,
+          amount: splitAmount,
+        }));
+
+        const expenseRes = await fetch(`${base}/trips/${encodeURIComponent(tripId)}/expenses`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            paid_by_user_id: user?.id || '',
+            description: receipt_data.merchant || 'Receipt',
+            amount: receipt_data.total,
+            expense_date: receipt_data.date || new Date().toISOString().split('T')[0],
+            currency: receipt_data.currency || 'USD',
+            receipt_image_url: `${base}${receipt_url}`,
+            splits,
+          }),
+        });
+
+        if (expenseRes.ok) {
+          await loadExpenses();
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      }
+    } catch (error) {
+      console.error('Receipt upload failed:', error);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Get user initials and color
+  const getUserInitials = (name: string) => {
+    const parts = name.split(' ');
+    return parts.map(p => p[0]).join('').toUpperCase().slice(0, 2);
+  };
+
+  const handleEditExpense = (expense: Expense) => {
+    setEditingExpense(expense);
+    setEditForm({
+      description: expense.description,
+      amount: expense.amount.toString(),
+      date: expense.expense_date,
+    });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingExpense || !CHAT_WS_BASE) return;
+    
+    try {
+      const base = CHAT_WS_BASE.replace(/\/$/, '');
+      const res = await fetch(`${base}/expenses/${encodeURIComponent(editingExpense.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          description: editForm.description,
+          amount: parseFloat(editForm.amount),
+          expense_date: editForm.date,
+        }),
+      });
+
+      if (res.ok) {
+        await loadExpenses();
+        setEditingExpense(null);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (error) {
+      console.error('Failed to update expense:', error);
+    }
+  };
+
+  const handleDeleteExpense = async (expenseId: string) => {
+    if (!CHAT_WS_BASE) return;
+    
+    try {
+      const base = CHAT_WS_BASE.replace(/\/$/, '');
+      const res = await fetch(`${base}/expenses/${encodeURIComponent(expenseId)}`, {
+        method: 'DELETE',
+      });
+
+      if (res.ok) {
+        await loadExpenses();
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (error) {
+      console.error('Failed to delete expense:', error);
+    }
+  };
+
+  const settlements: Settlement[] = balances?.settlements.map(s => ({
+    from_user_id: s[0],
+    to_user_id: s[1],
+    amount: s[2],
+    from_name: s[3],
+    to_name: s[4],
+  })) || [];
+
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={styles.costsUploadSection}>
+        <Pressable
+          style={({ pressed }) => [
+            styles.costsUploadButton,
+            pressed && { opacity: 0.9 },
+          ]}
+          onPress={handleUploadReceipt}
+          disabled={uploading}
+          accessibilityRole="button"
+          accessibilityLabel="Upload receipt">
+          <LinearGradient
+            colors={['#E8A68A', '#C45C3E']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+          <IconSymbol name="doc.text.image" size={32} color="#FFFFFF" />
+          <Text style={styles.costsUploadLabel}>
+            {uploading ? 'Processing...' : 'Upload Receipt'}
+          </Text>
+        </Pressable>
+      </View>
+
+      <ScrollView
+        style={styles.tabContent}
+        contentContainerStyle={styles.tabContentInner}
+        showsVerticalScrollIndicator={false}>
+        {loading ? (
+          <Text style={styles.placeholderText}>Loading...</Text>
+        ) : (
+          <>
+            {settlements.length > 0 && (
+              <Animated.View entering={FadeInDown.springify()}>
+                <Text style={styles.placeholderTitle}>Who Owes Whom</Text>
+                {settlements.map((settlement, idx) => {
+                  const fromColor = getUserColor(settlement.from_user_id, settlement.from_name);
+                  const toColor = getUserColor(settlement.to_user_id, settlement.to_name);
+                  
+                  return (
+                    <View key={idx} style={styles.settlementCard}>
+                      <View style={styles.settlementRow}>
+                        <View style={[styles.settlementAvatar, { backgroundColor: fromColor.bg }]}>
+                          <Text style={{ fontFamily: 'DMSans_600SemiBold', fontSize: 14, color: fromColor.text }}>
+                            {getUserInitials(settlement.from_name)}
+                          </Text>
+                        </View>
+                        <Text style={styles.settlementText}>
+                          <Text style={{ fontFamily: 'DMSans_600SemiBold' }}>{settlement.from_name}</Text>
+                          {' owes '}
+                          <Text style={{ fontFamily: 'DMSans_600SemiBold' }}>{settlement.to_name}</Text>
+                        </Text>
+                        <View style={[styles.settlementAvatar, { backgroundColor: toColor.bg }]}>
+                          <Text style={{ fontFamily: 'DMSans_600SemiBold', fontSize: 14, color: toColor.text }}>
+                            {getUserInitials(settlement.to_name)}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={[styles.settlementAmount, { textAlign: 'center', marginTop: Spacing.sm }]}>
+                        ${settlement.amount.toFixed(2)}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </Animated.View>
+            )}
+
+            {expenses.length > 0 && (
+              <Animated.View entering={FadeInDown.delay(100).springify()}>
+                <Text style={[styles.placeholderTitle, { marginTop: settlements.length > 0 ? Spacing.xl : 0 }]}>
+                  Receipt Archive
+                </Text>
+                {expenses.map((expense) => (
+                  <View key={expense.id} style={styles.expenseCard}>
+                    <View style={styles.expenseHeader}>
+                      <Text style={styles.expenseDescription}>{expense.description}</Text>
+                      <View style={{ flexDirection: 'row', gap: Spacing.xs, alignItems: 'center' }}>
+                        <Text style={styles.expenseAmount}>
+                          ${expense.amount.toFixed(2)}
+                        </Text>
+                        <Pressable
+                          onPress={() => handleEditExpense(expense)}
+                          hitSlop={8}>
+                          <IconSymbol name="pencil" size={16} color={colors.tint} />
+                        </Pressable>
+                        <Pressable
+                          onPress={() => handleDeleteExpense(expense.id)}
+                          hitSlop={8}>
+                          <IconSymbol name="trash" size={16} color={colors.textSecondary} />
+                        </Pressable>
+                      </View>
+                    </View>
+                    <Text style={styles.expenseMeta}>
+                      Paid by {balances?.user_names[expense.paid_by_user_id] || 'Unknown'} • {new Date(expense.expense_date).toLocaleDateString()}
+                    </Text>
+                    {expense.receipt_image_url && (
+                      <Pressable
+                        onPress={() => {
+                          if (expense.receipt_image_url) {
+                            Linking.openURL(expense.receipt_image_url);
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          }
+                        }}>
+                        <Image
+                          source={{ uri: expense.receipt_image_url }}
+                          style={styles.receiptThumb}
+                          contentFit="cover"
+                        />
+                      </Pressable>
+                    )}
+                  </View>
+                ))}
+              </Animated.View>
+            )}
+
+            {!loading && expenses.length === 0 && (
+              <Animated.View entering={FadeInDown.springify()}>
+                <Text style={styles.placeholderTitle}>Bill Splitting</Text>
+                <Text style={styles.placeholderText}>
+                  Upload a receipt above to automatically split costs with your group. Our AI will extract the total and split it evenly.
+                </Text>
+              </Animated.View>
+            )}
+          </>
+        )}
+      </ScrollView>
+
+      {/* Edit Expense Modal */}
+      <Modal
+        visible={editingExpense !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditingExpense(null)}>
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+          onPress={() => setEditingExpense(null)}>
+          <Pressable
+            style={{
+              backgroundColor: colors.background,
+              borderRadius: Radius.xl,
+              padding: Spacing.xl,
+              width: '90%',
+              maxWidth: 400,
+            }}
+            onPress={(e) => e.stopPropagation()}>
+            <Text
+              style={{
+                fontFamily: 'Fraunces_600SemiBold',
+                fontSize: 20,
+                color: colors.text,
+                marginBottom: Spacing.lg,
+              }}>
+              Edit Expense
+            </Text>
+
+            <Text
+              style={{
+                fontFamily: 'DMSans_500Medium',
+                fontSize: 13,
+                color: colors.textSecondary,
+                marginBottom: Spacing.xs,
+              }}>
+              Description
+            </Text>
+            <TextInput
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 16,
+                color: colors.text,
+                backgroundColor: colors.surface,
+                borderRadius: Radius.md,
+                paddingHorizontal: Spacing.md,
+                paddingVertical: Spacing.sm,
+                marginBottom: Spacing.md,
+                borderWidth: 1,
+                borderColor: colors.borderLight,
+              }}
+              value={editForm.description}
+              onChangeText={(text) => setEditForm({ ...editForm, description: text })}
+              placeholder="e.g. Taco Bell"
+              placeholderTextColor={colors.textTertiary}
+            />
+
+            <Text
+              style={{
+                fontFamily: 'DMSans_500Medium',
+                fontSize: 13,
+                color: colors.textSecondary,
+                marginBottom: Spacing.xs,
+              }}>
+              Amount
+            </Text>
+            <TextInput
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 16,
+                color: colors.text,
+                backgroundColor: colors.surface,
+                borderRadius: Radius.md,
+                paddingHorizontal: Spacing.md,
+                paddingVertical: Spacing.sm,
+                marginBottom: Spacing.md,
+                borderWidth: 1,
+                borderColor: colors.borderLight,
+              }}
+              value={editForm.amount}
+              onChangeText={(text) => setEditForm({ ...editForm, amount: text })}
+              placeholder="0.00"
+              placeholderTextColor={colors.textTertiary}
+              keyboardType="decimal-pad"
+            />
+
+            <Text
+              style={{
+                fontFamily: 'DMSans_500Medium',
+                fontSize: 13,
+                color: colors.textSecondary,
+                marginBottom: Spacing.xs,
+              }}>
+              Date
+            </Text>
+            <TextInput
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 16,
+                color: colors.text,
+                backgroundColor: colors.surface,
+                borderRadius: Radius.md,
+                paddingHorizontal: Spacing.md,
+                paddingVertical: Spacing.sm,
+                marginBottom: Spacing.lg,
+                borderWidth: 1,
+                borderColor: colors.borderLight,
+              }}
+              value={editForm.date}
+              onChangeText={(text) => setEditForm({ ...editForm, date: text })}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={colors.textTertiary}
+            />
+
+            <View style={{ flexDirection: 'row', gap: Spacing.sm }}>
+              <Pressable
+                onPress={() => setEditingExpense(null)}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  paddingVertical: Spacing.md,
+                  borderRadius: Radius.md,
+                  backgroundColor: colors.surface,
+                  alignItems: 'center',
+                  opacity: pressed ? 0.7 : 1,
+                })}>
+                <Text
+                  style={{
+                    fontFamily: 'DMSans_600SemiBold',
+                    fontSize: 16,
+                    color: colors.textSecondary,
+                  }}>
+                  Cancel
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={handleSaveEdit}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  paddingVertical: Spacing.md,
+                  borderRadius: Radius.md,
+                  backgroundColor: colors.tint,
+                  alignItems: 'center',
+                  opacity: pressed ? 0.9 : 1,
+                })}>
+                <Text
+                  style={{
+                    fontFamily: 'DMSans_600SemiBold',
+                    fontSize: 16,
+                    color: '#FFFFFF',
+                  }}>
+                  Save
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -1094,7 +1834,7 @@ export default function TripDetailScreen() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') return;
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      mediaTypes: ['images', 'videos'],
       allowsMultipleSelection: true,
       quality: 0.8,
     });
@@ -1666,19 +2406,7 @@ export default function TripDetailScreen() {
         </ScrollView>
       )}
 
-      {activeTab === 'Costs' && (
-        <ScrollView
-          style={styles.tabContent}
-          contentContainerStyle={styles.tabContentInner}
-          showsVerticalScrollIndicator={false}>
-          <Animated.View entering={FadeInDown.springify()}>
-            <Text style={styles.placeholderTitle}>Bill splitting</Text>
-            <Text style={styles.placeholderText}>
-              Split receipts and track costs. Upload a receipt to get started.
-            </Text>
-          </Animated.View>
-        </ScrollView>
-      )}
+      {activeTab === 'Costs' && <CostsTab tripId={id!} colors={colors} styles={styles} user={user} trip={trip} />}
 
       {activeTab === 'Map' && (
         <View style={styles.mapContainer}>
