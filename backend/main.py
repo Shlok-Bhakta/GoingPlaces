@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import re
 from typing import Any
 
@@ -30,6 +31,7 @@ from db import (
     get_trips_for_user,
     get_trip as db_get_trip,
 )
+from google_places import search_places as gp_search_places, get_place_details as gp_get_place_details, get_distance_matrix as gp_get_distance_matrix
 
 # Load .env.local from project root so EXPO_PUBLIC_OPENROUTER_API_KEY is available
 _load_env_paths = [
@@ -41,6 +43,7 @@ for _p in _load_env_paths:
         load_dotenv(_p)
         break
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("EXPO_PUBLIC_OPENROUTER_API_KEY")
+GOOGLE_MAPS_API_KEY = os.environ.get("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY") or os.environ.get("GOOGLE_MAPS_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -64,6 +67,34 @@ def get_room(trip_id: str) -> set[WebSocket]:
     return rooms[trip_id]
 
 
+async def _drain_status_queue(status_queue: queue.Queue[str], room: set[WebSocket]) -> None:
+    """Drain status messages from queue and broadcast typing_status to the room until cancelled."""
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            msg = await loop.run_in_executor(None, lambda: status_queue.get(timeout=0.25))
+            for ws in room:
+                try:
+                    await ws.send_json({"type": "typing_status", "message": msg})
+                except Exception:
+                    pass
+        except queue.Empty:
+            continue
+        except asyncio.CancelledError:
+            break
+    # Final drain
+    while True:
+        try:
+            msg = status_queue.get_nowait()
+            for ws in room:
+                try:
+                    await ws.send_json({"type": "typing_status", "message": msg})
+                except Exception:
+                    pass
+        except queue.Empty:
+            break
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
@@ -72,6 +103,10 @@ def startup() -> None:
         logger.info("OpenRouter: API key loaded (length=%d)", len(OPENROUTER_API_KEY))
     else:
         logger.warning("OpenRouter: no API key (set OPENROUTER_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY in .env.local)")
+    if GOOGLE_MAPS_API_KEY:
+        logger.info("Google Maps: API key loaded for Places/Distance (LLM tools)")
+    else:
+        logger.warning("Google Maps: no API key (set EXPO_PUBLIC_GOOGLE_MAPS_API_KEY in .env.local for realistic itinerary tools)")
 
 
 @app.get("/health")
@@ -162,6 +197,70 @@ def get_trip_itinerary(trip_id: str) -> dict[str, Any]:
         return {"itinerary": None}
 
 
+class PutItineraryBody(BaseModel):
+    itinerary: list[dict[str, Any]]
+
+
+@app.put("/trips/{trip_id}/itinerary")
+async def put_trip_itinerary(trip_id: str, body: PutItineraryBody) -> dict[str, Any]:
+    """Save itinerary for a trip and broadcast to all clients in the trip's WebSocket room."""
+    normalized = _parse_itinerary_json(json.dumps(body.itinerary)) if body.itinerary else None
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Invalid itinerary")
+    set_itinerary(trip_id, json.dumps(normalized))
+    room = get_room(trip_id)
+    payload = {"type": "itinerary", "trip_id": trip_id, "itinerary": normalized}
+    dead = set()
+    for ws in room:
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.add(ws)
+    for ws in dead:
+        room.discard(ws)
+    return {"ok": True}
+
+
+# --- Google Places / Distance Matrix (for realistic trip planning; also used by LLM tools) ---
+@app.get("/places/search")
+def api_places_search(
+    query: str = Query(..., min_length=1),
+    location: str | None = Query(None),
+    max_results: int = Query(5, ge=1, le=20),
+) -> dict[str, Any]:
+    """Search for real places by text (e.g. 'coffee shop San Francisco'). Returns place_id, name, address."""
+    return gp_search_places(query=query, location=location, max_results=max_results)
+
+
+@app.get("/places/search/food")
+def api_search_food_places(
+    food_type: str = Query(..., min_length=1),
+    location: str = Query(..., min_length=1),
+    max_results: int = Query(5, ge=1, le=20),
+) -> dict[str, Any]:
+    """Search for restaurants/food by type and city. Returns name, address, rating, place_id. Use when the user wants a meal but didn't name a place."""
+    query = f"{food_type.strip()} restaurant {location.strip()}"
+    return gp_search_places(query=query, location=location.strip(), max_results=max_results)
+
+
+@app.get("/places/details/{place_id}")
+def api_place_details(place_id: str) -> dict[str, Any]:
+    """Get place details including opening hours (weekday_text) by place_id."""
+    return gp_get_place_details(place_id=place_id)
+
+
+class DistanceMatrixBody(BaseModel):
+    origins: list[str]
+    destinations: list[str]
+    mode: str = "driving"
+
+
+@app.post("/places/distance-matrix")
+def api_distance_matrix(body: DistanceMatrixBody) -> dict[str, Any]:
+    """Get travel distance and duration between origins and destinations (addresses or lat,lng)."""
+    return gp_get_distance_matrix(origins=body.origins, destinations=body.destinations, mode=body.mode)
+
+
 # --- OpenRouter (@gemini) integration: google/gemini-3-flash-preview via OpenRouter API (OpenAI-compatible) ---
 OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 
@@ -170,16 +269,29 @@ SYSTEM_INSTRUCTION = """You are a helpful trip-planning assistant in a group cha
 ## Step 1: Determine the action
 
 Choose ONE based on the user's request:
-- **RESPOND_ONLY**: User is asking a question, wants info, or wants you to summarize/describe. Examples: "What's our plan?", "What have we got so far?", "Summarize our itinerary", "What are we doing on Day 2?", "Tell me more about that". Answer using the conversation and existing itinerary context. Do NOT output any itinerary JSON.
-- **UPDATE_ITINERARY**: User wants to create, change, or add to the plan. Examples: "Add Napa on Day 2", "Change day 1 to...", "Let's plan a trip to SF", "Remove the morning activity", "Add a wine tasting". Output the full updated itinerary as JSON.
+- **RESPOND_ONLY**: User is asking a question, wants info, or wants you to summarize/describe. Also use RESPOND_ONLY when the user wants to **replace** a specific existing itinerary item with a real place (e.g. "replace brunch with a real place", "find a spot for Brunch in Austin", "that generic brunch – find me a restaurant"): search for options, list them in your response, and output a <suggestions> block with **replaceActivityId** and/or **replaceTitle** set to the existing activity so the app can replace it in place when the user taps. Do NOT output itinerary JSON for replace—the app does the replace on button tap.
+- **UPDATE_ITINERARY**: User wants to create, add to, or change the plan in a way that requires full itinerary output. Examples: "Add Napa on Day 2", "Change day 1 to...", "Let's plan a trip to SF", "Remove the morning activity", "Add a wine tasting". Output the full updated itinerary as JSON.
 
-When in doubt: if they're ASKING (what, how, summarize, tell me) → RESPOND_ONLY. If they're REQUESTING changes (add, remove, change, let's plan) → UPDATE_ITINERARY.
+When in doubt: if they're ASKING (what, how, summarize, tell me) or asking to REPLACE one item with options → RESPOND_ONLY (with suggestions + replace fields for replace). If they're REQUESTING full changes (add, remove, let's plan) → UPDATE_ITINERARY.
 
 ## Step 2: Output in this format
 
 For RESPOND_ONLY, output:
 <action>respond</action>
 <response>Your friendly response here. Use the existing itinerary from context to answer questions about the current plan.</response>
+
+When you list options for the user to choose from, you MUST also output a <suggestions> block so they can tap to add or replace in the plan without replying. You MAY output many suggestions in one message (e.g. options for Day 1 dinner and Day 2 lunch). Use the same order as in your response.
+
+**Every suggestion must specify day and time when adding:** So the app adds each option to the correct slot, every suggestion MUST include **dayLabel** (e.g. "Day 1", "Day 2", "Friday") and **time** (e.g. "6:00 PM", "12:00 PM") when the user asked for options for specific days/meals. When the user asks for "2 meals" or "surprises for Day 1 and Day 2", output multiple suggestions: some with dayLabel "Day 1" and time for that meal (e.g. "6:00 PM" for dinner), others with dayLabel "Day 2" and time for that meal (e.g. "12:00 PM" for lunch). In your response text, clearly say which options are for which day and time (e.g. "For Day 1 dinner: Fog Harbor, Scoma's. For Day 2 lunch: Gott's, Slanted Door.").
+
+**REPLACE vs ADD:** You are given the current itinerary in context. Use the exact activity id and title from that context.
+- **REPLACE**: When the user wants to replace a specific existing item. Include in each suggestion **replaceActivityId** and/or **replaceTitle**. The app replaces that activity in place (same time slot).
+- **ADD**: When adding something new, omit replaceActivityId and replaceTitle. Always set **dayLabel** and **time** per suggestion so each option goes to the right day and time.
+
+<suggestions>
+[{"title": "Place Name", "description": "short description with address/rating", "location": "full address", "dayLabel": "Day 1", "time": "6:00 PM", "replaceActivityId": "act-2", "replaceTitle": "Brunch in Austin"}]
+</suggestions>
+Use replaceActivityId/replaceTitle only when replacing. When adding, always include dayLabel and time for every suggestion.
 
 For UPDATE_ITINERARY, output:
 <action>update_itinerary</action>
@@ -193,7 +305,144 @@ For UPDATE_ITINERARY, output:
 Itinerary JSON structure (each day: id, dayNumber, title, date optional, activities array; each activity: id, time optional, title, description optional, location optional):
 [{"id":"day-1","dayNumber":1,"title":"Day 1","date":"YYYY-MM-DD","activities":[{"id":"act-1","time":"9:00 AM","title":"Title","description":"","location":""}]}]
 
-**CRITICAL for UPDATE_ITINERARY:** You are given the current itinerary in the context below. When the user asks to ADD something (e.g. arrival/departure flight times, a new activity, a new day), your <itinerary> output MUST be the COMPLETE plan: include EVERY day and EVERY activity that is already in the current itinerary, unchanged, PLUS your new or modified items. Never output only the new items—that would replace the whole plan and delete everything else. If the user says "add X", start from the full current itinerary, add X, then output that full array."""
+**CRITICAL for UPDATE_ITINERARY:** You are given the current itinerary in the context below. When the user asks to ADD something (e.g. arrival/departure flight times, a new activity, a new day), your <itinerary> output MUST be the COMPLETE plan: include EVERY day and EVERY activity that is already in the current itinerary, unchanged, PLUS your new or modified items. Never output only the new items—that would replace the whole plan and delete everything else. If the user says "add X", start from the full current itinerary, add X, then output that full array.
+
+## Tools for realistic plans (UPDATE_ITINERARY)
+
+When the user wants to create or update an itinerary, use the provided tools to make the plan realistic:
+1. **search_places**: Search for real venues (e.g. "Academy of Sciences San Francisco", "breakfast cafe Napa"). Use the trip destination or city name in queries. Call this to find real place_id, name, and address for activities.
+2. **search_food_places**: Search for restaurants by food type and city (e.g. food_type="sushi", location="San Francisco"). Use when the user wants a meal (lunch, dinner, breakfast) but didn't name a specific place. Returns name, address, rating. If unsure which restaurant to add, call this and then ask the user in your response: list the options with name, full address, and rating and ask which they prefer or if you should add the top-rated one.
+3. **get_place_details**: After search_places or search_food_places, call this with a place_id to get opening hours (weekday_text), full address, rating, user_ratings_total. Use for every place you add so the itinerary has real name, address, and rating.
+4. **get_distance_matrix**: Given two or more addresses or place names (or "lat,lng"), get driving/walking distance and duration between them. Use this to ensure travel time between activities is realistic and to order activities logically.
+
+Use these tools when building or updating an itinerary so that places, hours, and travel times are accurate. You may call multiple tools before outputting the final <itinerary>.
+
+## CRITICAL: Use real place data in the itinerary
+
+When you have called search_places and/or get_place_details, you MUST use that real data in the itinerary—never generic labels or vague descriptions.
+
+- **Activity title**: Use the exact place name from the API (e.g. "Sushi Bistro", "California Academy of Sciences"). NEVER use generic titles like "Sushi Lunch", "Local Sushi Restaurant", "Seafood Dinner at a local spot".
+- **Activity description**: Include the full address (formatted_address) and rating when available. For example: "123 Main St, San Francisco. 4.5★, 200 reviews." or "Highly rated (4.5★, 200 reviews). 456 Ocean Ave." Do NOT use vague text like "Enjoy a fresh sushi lunch at a highly-rated local spot" without naming the place and including address/rating from your tool results.
+- **Activity location**: Set the location field to the formatted_address from the API for each venue.
+
+If you searched for a restaurant or venue and got results, the itinerary MUST list that place by name and include its address and rating in the description. Always call get_place_details for any place you add so you have opening hours and rating to include.
+
+## Food / restaurant activities – required data and when to ask the user
+
+For ANY meal or food place (breakfast, lunch, dinner, cafe, sushi, seafood, etc.):
+
+1. **You must search**: Call search_places or search_food_places with the type of food and the trip destination/city (e.g. "sushi restaurant San Francisco", "breakfast cafe Napa"). Then call get_place_details for the place(s) you add so you have the exact name, full formatted_address, rating, and user_ratings_total.
+
+2. **Every food activity in the itinerary must have**:
+   - **title**: The exact business name from the API (e.g. "Sushi Bistro", not "Sushi Lunch").
+   - **description**: The full address (formatted_address) and rating, e.g. "123 Main St, San Francisco, CA. 4.5★, 200 reviews."
+   - **location**: The formatted_address from the API.
+
+3. **When you're not sure which restaurant to pick**: If the user said something like "add a sushi lunch" or "dinner at a seafood place" or "2 meals" / "surprises for Day 1 and Day 2" without naming venues, call search_food_places (or search_places) and get real options. Then in your <response>, list options and clearly say which are for which day and time (e.g. "For Day 1 dinner near Alcatraz: Fog Harbor, Scoma's. For Day 2 lunch at Ferry Building: Gott's, Slanted Door."). You MUST output a <suggestions> block with one object per option. When **adding** (not replacing): every suggestion MUST have **dayLabel** (e.g. "Day 1", "Day 2") and **time** (e.g. "6:00 PM", "12:00 PM") so the app adds each to the correct day and time. When the user asks for multiple meals/days, output multiple suggestions—each with its own dayLabel and time—so each option maps to the right slot. When **replacing** an existing activity, include replaceActivityId and/or replaceTitle instead. Always include title, description, location; when adding, always include dayLabel and time. The app shows "Add to plan" or "Replace with this" and displays the day/time per option. Do NOT add generic placeholders—always use real data from your search."""
+
+
+# OpenAI-format tools for OpenRouter (Places search, details, distance)
+PLACES_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_places",
+            "description": "Search for real places/venues by text query. Use for finding museums, restaurants, landmarks, etc. in a city. Returns place_id, name, formatted_address, rating, user_ratings_total. Include city or destination in the query (e.g. 'sushi restaurant San Francisco'). Use the exact name and rating in the itinerary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query, e.g. 'coffee shop Union Square San Francisco' or 'Golden Gate Bridge'"},
+                    "location": {"type": "string", "description": "Optional location bias: city name or lat,lng"},
+                    "max_results": {"type": "integer", "description": "Max number of results (default 5)", "default": 5},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_place_details",
+            "description": "Get details for a place by place_id, including opening hours (weekday_text), rating, user_ratings_total, formatted_address. Call this after search_places for each place you add to the itinerary so you can include real name, address, rating, and hours.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "place_id": {"type": "string", "description": "Place ID from search_places"},
+                },
+                "required": ["place_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_food_places",
+            "description": "Search for restaurants/food venues by type of food and city. Use when the user wants a meal (e.g. 'sushi lunch', 'seafood dinner', 'breakfast') but did not name a specific place. Returns name, formatted_address, rating, user_ratings_total, place_id. If you're not sure which restaurant to add, call this, then in your response list the options with name, full address, and rating and ask the user which they prefer or if you should add the top-rated one.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "food_type": {"type": "string", "description": "Type of food or meal, e.g. 'sushi', 'seafood', 'breakfast', 'Italian', 'brunch'"},
+                    "location": {"type": "string", "description": "City or area, e.g. 'San Francisco', 'Napa'. Use trip destination when possible."},
+                    "max_results": {"type": "integer", "description": "Max results to return (default 5)", "default": 5},
+                },
+                "required": ["food_type", "location"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_distance_matrix",
+            "description": "Get travel distance and duration between origins and destinations. Use addresses or place names. Ensures the plan has realistic travel times between activities.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "origins": {"type": "array", "items": {"type": "string"}, "description": "List of origin addresses or 'lat,lng'"},
+                    "destinations": {"type": "array", "items": {"type": "string"}, "description": "List of destination addresses or 'lat,lng'"},
+                    "mode": {"type": "string", "description": "Travel mode: driving, walking, bicycling, transit", "default": "driving"},
+                },
+                "required": ["origins", "destinations"],
+            },
+        },
+    },
+]
+
+
+def _execute_tool(name: str, arguments: dict[str, Any]) -> str:
+    """Run a single tool by name and return JSON string result for the LLM."""
+    try:
+        if name == "search_places":
+            out = gp_search_places(
+                query=arguments.get("query", ""),
+                location=arguments.get("location"),
+                max_results=int(arguments.get("max_results", 5)),
+            )
+        elif name == "search_food_places":
+            food_type = (arguments.get("food_type") or "").strip()
+            location = (arguments.get("location") or "").strip()
+            if not food_type or not location:
+                out = {"error": "food_type and location are required", "results": []}
+            else:
+                query = f"{food_type} restaurant {location}"
+                out = gp_search_places(
+                    query=query,
+                    location=location,
+                    max_results=int(arguments.get("max_results", 5)),
+                )
+        elif name == "get_place_details":
+            out = gp_get_place_details(place_id=arguments.get("place_id", ""))
+        elif name == "get_distance_matrix":
+            out = gp_get_distance_matrix(
+                origins=arguments.get("origins") or [],
+                destinations=arguments.get("destinations") or [],
+                mode=arguments.get("mode", "driving"),
+            )
+        else:
+            out = {"error": f"Unknown tool: {name}"}
+        return json.dumps(out)
+    except Exception as e:
+        logger.exception("Tool %s failed: %s", name, e)
+        return json.dumps({"error": str(e)})
 
 
 def _build_chat_messages(history: list[dict]) -> list[dict]:
@@ -247,6 +496,7 @@ def _call_openrouter_sync(
     extra_user_message: str | None = None,
     existing_itinerary: list[dict] | None = None,
     trip_info: dict[str, Any] | None = None,
+    status_queue: queue.Queue[str] | None = None,
 ) -> str:
     """Call OpenRouter API (google/gemini-3-flash-preview) via OpenAI-compatible chat completions. Returns response text."""
     if not OPENROUTER_API_KEY:
@@ -283,18 +533,62 @@ def _call_openrouter_sync(
             return "No chat history to send. Say something and mention @gemini again."
         if extra_user_message:
             api_messages.append({"role": "user", "content": extra_user_message})
-        logger.info("OpenRouter: calling model=%s with %d messages", OPENROUTER_MODEL, len(api_messages))
-        response = client.chat.completions.create(
-            model=OPENROUTER_MODEL,
-            messages=api_messages,
-            max_tokens=2048,
-            temperature=0.7,
-        )
+        max_tool_rounds = 10
         out = ""
-        if response and response.choices:
+        for _round in range(max_tool_rounds):
+            if status_queue is not None:
+                try:
+                    status_queue.put_nowait("Planning your itinerary..." if _round == 0 else "Writing your response...")
+                except queue.Full:
+                    pass
+            logger.info("OpenRouter: calling model=%s with %d messages (round %d)", OPENROUTER_MODEL, len(api_messages), _round + 1)
+            kwargs: dict[str, Any] = {
+                "model": OPENROUTER_MODEL,
+                "messages": api_messages,
+                "max_tokens": 2048,
+                "temperature": 0.7,
+            }
+            kwargs["tools"] = PLACES_TOOLS
+            kwargs["tool_choice"] = "auto"
+            response = client.chat.completions.create(**kwargs)
+            if not response or not response.choices:
+                break
             msg = response.choices[0].message
-            if msg and msg.content:
-                out = msg.content.strip()
+            if not msg:
+                break
+            if msg.content:
+                out = (msg.content or "").strip()
+            tool_calls = getattr(msg, "tool_calls", None) or []
+            if not tool_calls:
+                break
+            # Append assistant message with tool_calls
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or None}
+            if tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in tool_calls
+                ]
+            api_messages.append(assistant_msg)
+            # Execute each tool and append tool results; push status for UI
+            for tc in tool_calls:
+                if status_queue is not None:
+                    try:
+                        if tc.function.name == "search_places" or tc.function.name == "search_food_places":
+                            status_queue.put_nowait("Searching for places...")
+                        elif tc.function.name == "get_place_details":
+                            status_queue.put_nowait("Checking opening hours...")
+                        elif tc.function.name == "get_distance_matrix":
+                            status_queue.put_nowait("Getting travel times...")
+                        else:
+                            status_queue.put_nowait("Fetching info from Maps...")
+                    except queue.Full:
+                        pass
+                try:
+                    args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else (tc.function.arguments or {})
+                except json.JSONDecodeError:
+                    args = {}
+                result = _execute_tool(tc.function.name, args)
+                api_messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
         if out:
             logger.info("OpenRouter: got response length=%d", len(out))
             return out
@@ -305,32 +599,69 @@ def _call_openrouter_sync(
         return f"Something went wrong while calling the AI: {str(e)}"
 
 
-def _parse_structured_response(text: str) -> tuple[str, list[dict] | None]:
+def _parse_suggestions(text: str) -> list[dict] | None:
+    """Extract <suggestions> JSON array from AI response for add-to-plan options."""
+    if not text:
+        return None
+    match = re.search(r"<suggestions>\s*([\s\S]*?)\s*</suggestions>", text, re.DOTALL | re.IGNORECASE)
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+    if json_match:
+        raw = json_match.group(1).strip()
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, list) or len(data) == 0:
+            return None
+        out = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title") or item.get("name") or ""
+            if not title:
+                continue
+            out.append({
+                "title": str(title),
+                "description": str(item.get("description", "")).strip() or None,
+                "location": str(item.get("location", "")).strip() or None,
+                "dayLabel": str(item.get("dayLabel", "")).strip() or None,
+                "time": str(item.get("time", "")).strip() or None,
+                "replaceActivityId": str(item.get("replaceActivityId", "")).strip() or None,
+                "replaceTitle": str(item.get("replaceTitle", "")).strip() or None,
+            })
+        return out if out else None
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _parse_structured_response(text: str) -> tuple[str, list[dict] | None, list[dict] | None]:
     """
-    Parse the AI's structured response. Returns (chat_message, itinerary_list_or_none).
-    - If <action>respond</action>: return (content of <response>, None)
-    - If <action>update_itinerary</action>: return (content of <response>, parsed itinerary list)
-    - Fallback: return (raw text, extracted itinerary if any)
+    Parse the AI's structured response. Returns (chat_message, itinerary_list_or_none, suggestions_list_or_none).
+    - If <action>respond</action>: return (content of <response>, None, suggestions if present)
+    - If <action>update_itinerary</action>: return (content of <response>, parsed itinerary list, suggestions if present)
+    - Fallback: return (raw text, extracted itinerary if any, None)
     """
     if not text:
-        return ("", None)
+        return ("", None, None)
     text = text.strip()
     action_match = re.search(r"<action>\s*(.+?)\s*</action>", text, re.DOTALL | re.IGNORECASE)
     response_match = re.search(r"<response>\s*([\s\S]*?)\s*</response>", text, re.DOTALL | re.IGNORECASE)
     itinerary_match = re.search(r"<itinerary>\s*([\s\S]*?)\s*</itinerary>", text, re.DOTALL | re.IGNORECASE)
     action = (action_match.group(1).strip().lower() if action_match else "").replace(" ", "_")
     response_text = response_match.group(1).strip() if response_match else text
+    suggestions = _parse_suggestions(text)
     if action == "update_itinerary" and itinerary_match:
         itinerary_block = itinerary_match.group(1).strip()
         json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", itinerary_block)
         raw_json = json_match.group(1).strip() if json_match else itinerary_block
         parsed = _parse_itinerary_json(raw_json)
-        return (response_text, parsed)
+        return (response_text, parsed, suggestions)
     if action == "respond" or action == "respond_only":
-        return (response_text, None)
+        return (response_text, None, suggestions)
     # Fallback: no structured format, try to extract itinerary from raw response
     parsed = _extract_itinerary_from_response(text)
-    return (text, parsed)
+    return (text, parsed, None)
 
 
 def _extract_itinerary_from_response(text: str) -> list[dict] | None:
@@ -463,20 +794,33 @@ async def websocket_chat(
                         existing_itinerary = json.loads(itinerary_raw)
                     except json.JSONDecodeError:
                         pass
+                status_queue: queue.Queue[str] = queue.Queue()
+                drain_task = asyncio.create_task(_drain_status_queue(status_queue, room))
                 try:
                     ai_text = await asyncio.to_thread(
-                        _call_openrouter_sync, messages, None, existing_itinerary, trip_info
+                        _call_openrouter_sync,
+                        messages,
+                        None,
+                        existing_itinerary,
+                        trip_info,
+                        status_queue,
                     )
                 except Exception as e:
                     logger.exception("OpenRouter: thread error %s", e)
                     ai_text = f"Something went wrong: {e}"
-                chat_message, itinerary_list = _parse_structured_response(ai_text)
+                finally:
+                    drain_task.cancel()
+                    try:
+                        await drain_task
+                    except asyncio.CancelledError:
+                        pass
+                chat_message, itinerary_list, suggestions_list = _parse_structured_response(ai_text)
                 # Retry with JSON-only prompt if update_itinerary was intended but parse failed
                 if itinerary_list is None and ("```json" in ai_text or "```" in ai_text or "<itinerary>" in ai_text.lower()):
                     logger.info("OpenRouter: retrying with JSON-only prompt")
                     try:
                         retry_text = await asyncio.to_thread(
-                            _call_openrouter_sync, messages, JSON_ONLY_PROMPT, existing_itinerary, trip_info
+                            _call_openrouter_sync, messages, JSON_ONLY_PROMPT, existing_itinerary, trip_info, None
                         )
                         itinerary_list = _parse_itinerary_json(retry_text.strip())
                         if itinerary_list is None and "```" in retry_text:
@@ -502,7 +846,10 @@ async def websocket_chat(
                     user_id=None,
                     user_name="Gemini",
                 )
-                payload_ai = {"type": "message", "message": ai_saved}
+                message_payload = dict(ai_saved)
+                if suggestions_list:
+                    message_payload["suggestions"] = suggestions_list
+                payload_ai = {"type": "message", "message": message_payload}
                 dead_ai = set()
                 for ws in room:
                     try:
