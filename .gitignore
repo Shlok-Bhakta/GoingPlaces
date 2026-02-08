@@ -51,3 +51,5 @@ app-example
 .env
 backend/__pycache__/
 backend/venv/r
+run_with_tunnel.sh
+.env.local
