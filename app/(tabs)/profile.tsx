@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Switch } from 'react-nat
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Spacing, Radius } from '@/constants/theme';
@@ -24,7 +25,7 @@ function getNotificationLabel(value: NotificationPreference): string {
 }
 
 export default function ProfileScreen() {
-  const { user } = useUser();
+  const { user, logout } = useUser();
   const { colorScheme, colors, toggleTheme } = useTheme();
   const [notificationPref, setNotificationPref] = useState<NotificationPreference>('trips');
   const [notificationsExpanded, setNotificationsExpanded] = useState(false);
@@ -128,6 +129,23 @@ export default function ProfileScreen() {
           </View>
         </View>
       </Animated.View>
+
+      <Animated.View entering={FadeInDown.delay(250).springify()} style={styles.logoutContainer}>
+        <Pressable
+          style={({ pressed }) => [
+            styles.logoutButton,
+            { backgroundColor: colors.surface, borderColor: colors.borderLight },
+            pressed && styles.logoutButtonPressed,
+          ]}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            logout();
+            router.replace('/onboarding');
+          }}>
+          <IconSymbol name="rectangle.portrait.and.arrow.right" size={20} color="#D84315" />
+          <Text style={styles.logoutText}>Log Out</Text>
+        </Pressable>
+      </Animated.View>
     </ScrollView>
   );
 }
@@ -175,13 +193,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    paddingTop: 60,
+    paddingTop: 100,
     paddingBottom: 120,
     paddingHorizontal: Spacing.lg,
   },
   header: {
     alignItems: 'center',
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.xxl,
   },
   avatar: {
     width: 80,
@@ -232,7 +250,6 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: 1,
-    marginLeft: Spacing.md + 20 + Spacing.md,
   },
   notificationOptions: {
     borderTopWidth: 1,
@@ -249,5 +266,25 @@ const styles = StyleSheet.create({
   notificationOptionLabel: {
     fontFamily: 'DMSans_500Medium',
     fontSize: 15,
+  },
+  logoutContainer: {
+    marginTop: Spacing.xl,
+  },
+  logoutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.md,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    gap: Spacing.sm,
+  },
+  logoutButtonPressed: {
+    opacity: 0.7,
+  },
+  logoutText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 16,
+    color: '#D84315',
   },
 });
