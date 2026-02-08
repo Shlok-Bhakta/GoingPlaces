@@ -13,9 +13,7 @@ import {
     View,
 } from 'react-native';
 import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
-import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
-import { useRouter } from 'expo-router';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Radius, Spacing } from '@/constants/theme';
@@ -33,40 +31,53 @@ export default function CreateTripScreen() {
   const [createdTripId, setCreatedTripId] = useState<string | null>(null);
   const [joinCode, setJoinCode] = useState<string | null>(null);
   const [joinCodeLoading, setJoinCodeLoading] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
   const { user } = useUser();
-  const { addTrip } = useTrips();
+  const { addTripFromApi, effectiveUserId } = useTrips();
   const router = useRouter();
   const { colors } = useTheme();
   
   const flashOpacity = useSharedValue(0);
 
-  useEffect(() => {
-    if (step !== 1 || !createdTripId) return;
-    setJoinCodeLoading(true);
-    fetch(`${CHAT_API_BASE.replace(/\/$/, '')}/register-code`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ trip_id: createdTripId }),
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.code) setJoinCode(data.code);
-      })
-      .catch(() => setJoinCode(null))
-      .finally(() => setJoinCodeLoading(false));
-  }, [step, createdTripId]);
-
-  const handleNext = () => {
+  const handleNext = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (step === 0) {
-      const tripId = addTrip({
-        name: name.trim() || 'New Trip',
-        destination: 'TBD',
-        status: 'planning',
-        createdBy: user?.id ?? 'current',
-      });
-      setCreatedTripId(tripId);
-      setStep(1);
+      const tripName = name.trim() || 'New Trip';
+      const userId = effectiveUserId ?? user?.id ?? 'guest';
+      setIsCreating(true);
+      try {
+        const base = CHAT_API_BASE.replace(/\/$/, '');
+        const res = await fetch(`${base}/trips`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: tripName,
+            created_by: userId,
+            destination: 'TBD',
+            status: 'planning',
+          }),
+        });
+        if (!res.ok) throw new Error('Failed to create trip');
+        const trip = await res.json();
+        const localTrip = {
+          id: trip.id,
+          name: trip.name,
+          destination: trip.destination ?? 'TBD',
+          status: trip.status ?? 'planning',
+          createdBy: trip.createdBy ?? userId,
+          createdAt: typeof trip.createdAt === 'number' ? trip.createdAt : Date.now(),
+        };
+        addTripFromApi(localTrip);
+        setCreatedTripId(trip.id);
+        setJoinCode(trip.code ?? null);
+        setStep(1);
+      } catch {
+        setJoinCode(null);
+        setStep(1);
+        setCreatedTripId(null);
+      } finally {
+        setIsCreating(false);
+      }
     } else {
       if (createdTripId) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -196,9 +207,9 @@ export default function CreateTripScreen() {
             !canProceed && styles.buttonDisabled,
           ]}
           onPress={handleNext}
-          disabled={!canProceed}>
+          disabled={!canProceed || (step === 0 && isCreating)}>
           <Text style={styles.primaryButtonText}>
-            {step === STEPS.length - 1 ? 'Go to trip' : 'Continue'}
+            {step === 0 && isCreating ? '…' : step === STEPS.length - 1 ? 'Go to trip' : 'Continue'}
           </Text>
         </Pressable>
       </View>

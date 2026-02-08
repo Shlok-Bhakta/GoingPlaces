@@ -37,7 +37,8 @@ yarn-error.*
 
 # Python backend
 backend/venv/
-backend/chat.db
+backend/goingplaces.db
+backend/*.db
 
 # typescript
 *.tsbuildinfo

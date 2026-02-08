@@ -2,7 +2,7 @@
 Custom Python backend for Going Places chat.
 - WebSocket rooms per trip_id so multiple devices share the same chat.
 - SQLite for message persistence and history.
-- When a message contains @gemini, call Google Gemini (Gemma) with full chat context
+- When a message contains @gemini, call OpenRouter (openai/gpt-5-nano) with full chat context
   and optionally extract an itinerary for the Plan tab.
 """
 import asyncio
@@ -25,9 +25,13 @@ from db import (
     set_itinerary,
     register_code,
     resolve_code,
+    create_trip as db_create_trip,
+    join_trip_by_code,
+    get_trips_for_user,
+    get_trip as db_get_trip,
 )
 
-# Load .env.local from project root so EXPO_PUBLIC_GEMINI_API_KEY is available
+# Load .env.local from project root so EXPO_PUBLIC_OPENROUTER_API_KEY is available
 _load_env_paths = [
     os.path.join(os.path.dirname(__file__), "..", ".env.local"),
     os.path.join(os.path.dirname(__file__), ".env"),
@@ -36,7 +40,7 @@ for _p in _load_env_paths:
     if os.path.isfile(_p):
         load_dotenv(_p)
         break
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("EXPO_PUBLIC_GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("EXPO_PUBLIC_OPENROUTER_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -64,10 +68,10 @@ def get_room(trip_id: str) -> set[WebSocket]:
 def startup() -> None:
     init_db()
     logger.info("Chat backend started; DB initialized.")
-    if GEMINI_API_KEY:
-        logger.info("Gemini: API key loaded (length=%d)", len(GEMINI_API_KEY))
+    if OPENROUTER_API_KEY:
+        logger.info("OpenRouter: API key loaded (length=%d)", len(OPENROUTER_API_KEY))
     else:
-        logger.warning("Gemini: no API key (set GEMINI_API_KEY or EXPO_PUBLIC_GEMINI_API_KEY in .env.local)")
+        logger.warning("OpenRouter: no API key (set OPENROUTER_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY in .env.local)")
 
 
 @app.get("/health")
@@ -95,6 +99,48 @@ def api_resolve_code(code: str = Query(..., min_length=4, max_length=4)) -> dict
     return {"trip_id": trip_id}
 
 
+class CreateTripBody(BaseModel):
+    name: str
+    created_by: str
+    destination: str = "TBD"
+    status: str = "planning"
+
+
+@app.post("/trips")
+def api_create_trip(body: CreateTripBody) -> dict[str, Any]:
+    """Create a trip, add creator as member, return trip with code."""
+    trip = db_create_trip(
+        name=body.name,
+        created_by_user_id=body.created_by,
+        destination=body.destination or "TBD",
+        status=body.status or "planning",
+    )
+    return trip
+
+
+class JoinTripBody(BaseModel):
+    code: str
+    user_id: str
+
+
+@app.post("/trips/join")
+def api_join_trip(body: JoinTripBody) -> dict[str, Any]:
+    """Join a trip by 4-digit code; record user as member. Returns trip or 404."""
+    code = (body.code or "").strip()
+    if len(code) != 4 or not code.isdigit():
+        raise HTTPException(status_code=400, detail="Invalid code")
+    trip = join_trip_by_code(code, body.user_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Invalid or expired code")
+    return trip
+
+
+@app.get("/users/{user_id}/trips")
+def api_my_trips(user_id: str) -> list[dict[str, Any]]:
+    """Return all trips the user is a member of (persisted across refresh)."""
+    return get_trips_for_user(user_id)
+
+
 @app.get("/trips/{trip_id}/messages")
 def list_messages(
     trip_id: str,
@@ -116,111 +162,175 @@ def get_trip_itinerary(trip_id: str) -> dict[str, Any]:
         return {"itinerary": None}
 
 
-# --- Gemini (@gemini) integration: use Gemma to avoid 429 on gemini-2.0-flash free tier ---
-GEMINI_MODEL = "gemma-3-27b-it"  # Gemma 3 27B via Gemini API; fallback: gemma-3-12b-it, gemini-2.0-flash
+# --- OpenRouter (@gemini) integration: google/gemini-3-flash-preview via OpenRouter API (OpenAI-compatible) ---
+OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 
-SYSTEM_INSTRUCTION = """You are a helpful trip-planning assistant in a group chat. When users mention you with @gemini, respond in a friendly, concise way. Use the full chat context to answer.
+SYSTEM_INSTRUCTION = """You are a helpful trip-planning assistant in a group chat. When users mention you with @gemini, you must FIRST decide what action to take, then respond in the required format.
 
-CRITICAL - Itinerary and Plan tab:
-- When the conversation clearly suggests a trip plan (destination, dates, activities, preferences), you MUST output a valid itinerary so the app can add it to the Plan tab.
-- The app will parse ONLY a single ```json ... ``` block from your response and add it to the Plan tab. Do NOT put the itinerary in chat text—put it ONLY inside one ```json ... ``` block.
-- Your chat message to the user should be SHORT (1–2 sentences), e.g. "I've added your SF itinerary to the Plan tab! Check the Plan tab to see the full schedule." Then on the next line output the JSON block.
-- If you include an itinerary, use this EXACT structure inside a single fenced block (no other text inside the block):
+## Step 1: Determine the action
 
+Choose ONE based on the user's request:
+- **RESPOND_ONLY**: User is asking a question, wants info, or wants you to summarize/describe. Examples: "What's our plan?", "What have we got so far?", "Summarize our itinerary", "What are we doing on Day 2?", "Tell me more about that". Answer using the conversation and existing itinerary context. Do NOT output any itinerary JSON.
+- **UPDATE_ITINERARY**: User wants to create, change, or add to the plan. Examples: "Add Napa on Day 2", "Change day 1 to...", "Let's plan a trip to SF", "Remove the morning activity", "Add a wine tasting". Output the full updated itinerary as JSON.
+
+When in doubt: if they're ASKING (what, how, summarize, tell me) → RESPOND_ONLY. If they're REQUESTING changes (add, remove, change, let's plan) → UPDATE_ITINERARY.
+
+## Step 2: Output in this format
+
+For RESPOND_ONLY, output:
+<action>respond</action>
+<response>Your friendly response here. Use the existing itinerary from context to answer questions about the current plan.</response>
+
+For UPDATE_ITINERARY, output:
+<action>update_itinerary</action>
+<response>Short message to the user, e.g. "I've added Napa to Day 2!"</response>
+<itinerary>
 ```json
-[
-  {"id": "day-1", "dayNumber": 1, "title": "Day 1", "date": "YYYY-MM-DD", "activities": [{"id": "act-1", "time": "9:00 AM", "title": "Activity name", "description": "Optional", "location": "Optional"}]}
-]
+[full itinerary array - use exact structure below]
 ```
+</itinerary>
 
-- Each day must have: id, dayNumber, title, date (optional), activities (array).
-- Each activity must have: id, time (optional), title, description (optional), location (optional).
-- Output valid JSON only inside the block (no trailing commas, no comments). If there isn't enough info for a plan, reply in text only and do not output any JSON block."""
+Itinerary JSON structure (each day: id, dayNumber, title, date optional, activities array; each activity: id, time optional, title, description optional, location optional):
+[{"id":"day-1","dayNumber":1,"title":"Day 1","date":"YYYY-MM-DD","activities":[{"id":"act-1","time":"9:00 AM","title":"Title","description":"","location":""}]}]
+
+**CRITICAL for UPDATE_ITINERARY:** You are given the current itinerary in the context below. When the user asks to ADD something (e.g. arrival/departure flight times, a new activity, a new day), your <itinerary> output MUST be the COMPLETE plan: include EVERY day and EVERY activity that is already in the current itinerary, unchanged, PLUS your new or modified items. Never output only the new items—that would replace the whole plan and delete everything else. If the user says "add X", start from the full current itinerary, add X, then output that full array."""
 
 
-def _build_gemini_contents(history: list[dict]) -> list[dict]:
-    """Build contents list for Gemini API from chat history."""
-    contents = []
+def _build_chat_messages(history: list[dict]) -> list[dict]:
+    """Build messages list for OpenRouter/OpenAI chat API from chat history. Includes message timestamps."""
+    messages = []
     for m in history:
-        role = "model" if m.get("is_ai") else "user"
+        role = "assistant" if m.get("is_ai") else "user"
         name = (m.get("user_name") or "User").strip()
         text = (m.get("content") or "").strip()
         if not text:
             continue
-        if role == "user":
-            contents.append({"role": "user", "parts": [{"text": f"{name}: {text}"}]})
-        else:
-            contents.append({"role": "model", "parts": [{"text": f"{name}: {text}"}]})
-    return contents
+        ts = m.get("created_at", "")
+        prefix = f"[{ts}] " if ts else ""
+        msg_text = f"{prefix}{name}: {text}"
+        messages.append({"role": role, "content": msg_text})
+    return messages
 
 
 ITINERARY_DONE_MESSAGE = "I've added your itinerary to the Plan tab! Check the Plan tab to see the full schedule."
 
-JSON_ONLY_PROMPT = """Output ONLY a valid JSON array for the trip itinerary. No markdown, no code fence, no other text. Format: [{"id":"day-1","dayNumber":1,"title":"Day 1","date":"YYYY-MM-DD","activities":[{"id":"act-1","time":"9:00 AM","title":"Title","description":"","location":""}]}]. Each day: id, dayNumber, title, date, activities. Each activity: id, time, title, description, location."""
+JSON_ONLY_PROMPT = """Output ONLY a valid JSON array for the COMPLETE trip itinerary. Include ALL days and activities from the current itinerary in the context above, plus any additions you are making (e.g. flight times). No markdown, no code fence, no other text. Format: [{"id":"day-1","dayNumber":1,"title":"Day 1","date":"YYYY-MM-DD","activities":[{"id":"act-1","time":"9:00 AM","title":"Title","description":"","location":""}]}]. Each day: id, dayNumber, title, date, activities. Each activity: id, time, title, description, location."""
+
+TRIP_INFO_PREFIX = """=== CONTEXT ===
+This conversation is about the trip "{name}" (destination: {destination}).
+
+"""
+
+ITINERARY_CONTEXT_PREFIX = """=== CONTEXT ===
+This is the FULL current itinerary in the Plan tab. Use it to answer "what's our plan?" etc.
+
+When the user asks to ADD or CHANGE something (e.g. "add arrival and departure flight times"):
+- Your task is to ADD or edit within this existing plan, not replace it.
+- Your <itinerary> output must contain ALL of the following days and activities, plus whatever you add or change.
+- Do NOT output only the new items—that would delete the rest of the plan.
+
+Current itinerary (JSON):
+
+```json
+"""
+
+ITINERARY_CONTEXT_SUFFIX = """
+```
+
+--- End context. Conversation: ---
+
+"""
 
 
-def _call_gemini_sync(contents: list[dict], extra_user_message: str | None = None) -> str:
-    """Call Gemini API (sync, run in thread). Returns response text."""
-    if not GEMINI_API_KEY:
-        logger.warning("Gemini: no API key set")
-        return "Gemini is not configured. Set GEMINI_API_KEY or EXPO_PUBLIC_GEMINI_API_KEY in .env.local."
+def _call_openrouter_sync(
+    messages: list[dict],
+    extra_user_message: str | None = None,
+    existing_itinerary: list[dict] | None = None,
+    trip_info: dict[str, Any] | None = None,
+) -> str:
+    """Call OpenRouter API (google/gemini-3-flash-preview) via OpenAI-compatible chat completions. Returns response text."""
+    if not OPENROUTER_API_KEY:
+        logger.warning("OpenRouter: no API key set")
+        return "The AI assistant is not configured. Set OPENROUTER_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY in .env.local."
     try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        # Build SDK Content objects: alternating user/model parts as text
-        sdk_contents = []
-        for c in contents:
-            role = c.get("role", "user")
-            parts = c.get("parts") or []
-            text = " ".join(p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text"))
-            if not text:
+        from openai import OpenAI
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+        # Build context: trip name/destination first, then itinerary
+        trip_prefix = ""
+        if trip_info:
+            name = trip_info.get("name") or "Trip"
+            destination = trip_info.get("destination") or "TBD"
+            trip_prefix = TRIP_INFO_PREFIX.format(name=name, destination=destination)
+        # Prepend itinerary context (existing plan or "none") to first user message
+        if existing_itinerary:
+            itinerary_context = trip_prefix + ITINERARY_CONTEXT_PREFIX + json.dumps(existing_itinerary, indent=2) + ITINERARY_CONTEXT_SUFFIX
+        else:
+            itinerary_context = trip_prefix + "=== CONTEXT ===\nThere is no itinerary in the Plan tab yet. If the user asks what the plan is, say they don't have one yet and offer to help create one.\n\n--- Conversation: ---\n\n"
+        # Build OpenAI-format messages with system instruction
+        api_messages: list[dict] = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
+        for i, m in enumerate(messages):
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if not content:
                 continue
-            if role == "user":
-                sdk_contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
-            else:
-                sdk_contents.append(types.Content(role="model", parts=[types.Part.from_text(text=text)]))
-        if not sdk_contents:
+            if i == 0 and role == "user" and itinerary_context:
+                content = itinerary_context + content
+            api_messages.append({"role": role, "content": content})
+        if len(api_messages) <= 1:
             return "No chat history to send. Say something and mention @gemini again."
         if extra_user_message:
-            sdk_contents = sdk_contents + [
-                types.Content(role="user", parts=[types.Part.from_text(text=extra_user_message)])
-            ]
-        # Gemma (gemma-3-27b-it) does not support system_instruction; fold into first user message
-        uses_gemma = "gemma" in GEMINI_MODEL.lower()
-        if uses_gemma and contents and (contents[0].get("role") == "user") and not extra_user_message:
-            first_parts = contents[0].get("parts") or []
-            first_text = " ".join(p.get("text", "") for p in first_parts if isinstance(p, dict) and p.get("text"))
-            sdk_contents[0] = types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=SYSTEM_INSTRUCTION + "\n\n---\n\nConversation:\n" + first_text)],
-            )
-        logger.info("Gemini: calling model=%s with %d turns", GEMINI_MODEL, len(sdk_contents))
-        config_kwargs = {"max_output_tokens": 2048, "temperature": 0.7}
-        if not uses_gemma:
-            config_kwargs["system_instruction"] = SYSTEM_INSTRUCTION
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=sdk_contents,
-            config=types.GenerateContentConfig(**config_kwargs),
+            api_messages.append({"role": "user", "content": extra_user_message})
+        logger.info("OpenRouter: calling model=%s with %d messages", OPENROUTER_MODEL, len(api_messages))
+        response = client.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            messages=api_messages,
+            max_tokens=2048,
+            temperature=0.7,
         )
         out = ""
-        if response:
-            if getattr(response, "text", None):
-                out = (response.text or "").strip()
-            elif getattr(response, "candidates", None) and response.candidates:
-                cand = response.candidates[0]
-                content = getattr(cand, "content", None)
-                parts = getattr(content, "parts", None) or [] if content else []
-                out = " ".join(getattr(p, "text", "") or "" for p in parts).strip()
+        if response and response.choices:
+            msg = response.choices[0].message
+            if msg and msg.content:
+                out = msg.content.strip()
         if out:
-            logger.info("Gemini: got response length=%d", len(out))
+            logger.info("OpenRouter: got response length=%d", len(out))
             return out
-        logger.warning("Gemini: empty or no .text on response: %s", type(response).__name__ if response else "None")
+        logger.warning("OpenRouter: empty or no content on response")
         return "I couldn't generate a response. Please try again."
     except Exception as e:
-        logger.exception("Gemini API error: %s", e)
-        return f"Something went wrong while calling Gemini: {str(e)}"
+        logger.exception("OpenRouter API error: %s", e)
+        return f"Something went wrong while calling the AI: {str(e)}"
+
+
+def _parse_structured_response(text: str) -> tuple[str, list[dict] | None]:
+    """
+    Parse the AI's structured response. Returns (chat_message, itinerary_list_or_none).
+    - If <action>respond</action>: return (content of <response>, None)
+    - If <action>update_itinerary</action>: return (content of <response>, parsed itinerary list)
+    - Fallback: return (raw text, extracted itinerary if any)
+    """
+    if not text:
+        return ("", None)
+    text = text.strip()
+    action_match = re.search(r"<action>\s*(.+?)\s*</action>", text, re.DOTALL | re.IGNORECASE)
+    response_match = re.search(r"<response>\s*([\s\S]*?)\s*</response>", text, re.DOTALL | re.IGNORECASE)
+    itinerary_match = re.search(r"<itinerary>\s*([\s\S]*?)\s*</itinerary>", text, re.DOTALL | re.IGNORECASE)
+    action = (action_match.group(1).strip().lower() if action_match else "").replace(" ", "_")
+    response_text = response_match.group(1).strip() if response_match else text
+    if action == "update_itinerary" and itinerary_match:
+        itinerary_block = itinerary_match.group(1).strip()
+        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", itinerary_block)
+        raw_json = json_match.group(1).strip() if json_match else itinerary_block
+        parsed = _parse_itinerary_json(raw_json)
+        return (response_text, parsed)
+    if action == "respond" or action == "respond_only":
+        return (response_text, None)
+    # Fallback: no structured format, try to extract itinerary from raw response
+    parsed = _extract_itinerary_from_response(text)
+    return (text, parsed)
 
 
 def _extract_itinerary_from_response(text: str) -> list[dict] | None:
@@ -332,7 +442,7 @@ async def websocket_chat(
 
             # If user mentioned @gemini, show typing, call Gemini, then add to Plan tab and notify
             if "@gemini" in content.lower():
-                logger.info("Gemini: mention detected for trip_id=%s", trip_id)
+                logger.info("OpenRouter: @gemini mention detected for trip_id=%s", trip_id)
                 # Broadcast typing indicator so clients show "Gemini is typing..."
                 for ws in room:
                     try:
@@ -340,28 +450,41 @@ async def websocket_chat(
                     except Exception:
                         pass
                 history_after = get_messages(trip_id)
-                contents = _build_gemini_contents(history_after)
-                if not contents:
-                    logger.warning("Gemini: no contents built from history")
+                messages = _build_chat_messages(history_after)
+                if not messages:
+                    logger.warning("OpenRouter: no messages built from history")
                     continue
+                # Fetch trip info and existing itinerary for LLM context
+                trip_info = db_get_trip(trip_id)
+                itinerary_raw = get_itinerary(trip_id)
+                existing_itinerary = None
+                if itinerary_raw:
+                    try:
+                        existing_itinerary = json.loads(itinerary_raw)
+                    except json.JSONDecodeError:
+                        pass
                 try:
-                    ai_text = await asyncio.to_thread(_call_gemini_sync, contents)
+                    ai_text = await asyncio.to_thread(
+                        _call_openrouter_sync, messages, None, existing_itinerary, trip_info
+                    )
                 except Exception as e:
-                    logger.exception("Gemini: thread error %s", e)
+                    logger.exception("OpenRouter: thread error %s", e)
                     ai_text = f"Something went wrong: {e}"
-                itinerary_list = _extract_itinerary_from_response(ai_text)
-                # Retry with JSON-only prompt if response had a code block but parse failed
-                if itinerary_list is None and ("```json" in ai_text or "```" in ai_text):
-                    logger.info("Gemini: retrying with JSON-only prompt")
+                chat_message, itinerary_list = _parse_structured_response(ai_text)
+                # Retry with JSON-only prompt if update_itinerary was intended but parse failed
+                if itinerary_list is None and ("```json" in ai_text or "```" in ai_text or "<itinerary>" in ai_text.lower()):
+                    logger.info("OpenRouter: retrying with JSON-only prompt")
                     try:
                         retry_text = await asyncio.to_thread(
-                            _call_gemini_sync, contents, JSON_ONLY_PROMPT
+                            _call_openrouter_sync, messages, JSON_ONLY_PROMPT, existing_itinerary, trip_info
                         )
                         itinerary_list = _parse_itinerary_json(retry_text.strip())
                         if itinerary_list is None and "```" in retry_text:
                             itinerary_list = _extract_itinerary_from_response(retry_text)
+                        if itinerary_list and not chat_message:
+                            chat_message = ITINERARY_DONE_MESSAGE
                     except Exception as retry_err:
-                        logger.warning("Gemini: JSON retry failed: %s", retry_err)
+                        logger.warning("OpenRouter: JSON retry failed: %s", retry_err)
                 if itinerary_list:
                     set_itinerary(trip_id, json.dumps(itinerary_list))
                     payload_it = {"type": "itinerary", "trip_id": trip_id, "itinerary": itinerary_list}
@@ -370,10 +493,8 @@ async def websocket_chat(
                             await ws.send_json(payload_it)
                         except Exception:
                             pass
-                    # Save short "done" message so chat shows Plan tab update, not the long JSON
-                    chat_message = ITINERARY_DONE_MESSAGE
-                else:
-                    chat_message = ai_text
+                if not chat_message:
+                    chat_message = ai_text or "I couldn't generate a response. Please try again."
                 ai_saved = add_message(
                     trip_id=trip_id,
                     content=chat_message,
@@ -387,7 +508,7 @@ async def websocket_chat(
                     try:
                         await ws.send_json(payload_ai)
                     except Exception as send_err:
-                        logger.warning("Gemini: failed to send AI message to client: %s", send_err)
+                        logger.warning("OpenRouter: failed to send AI message to client: %s", send_err)
                         dead_ai.add(ws)
                 for ws in dead_ai:
                     room.discard(ws)

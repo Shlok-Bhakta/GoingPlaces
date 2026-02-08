@@ -16,6 +16,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { MarkdownText } from '@/components/markdown-text';
 import { Colors, Spacing, Radius } from '@/constants/theme';
 import { useTrips, type ItineraryDay, type Itinerary } from '@/contexts/trips-context';
 import { useTheme } from '@/contexts/theme-context';
@@ -412,6 +413,8 @@ export default function TripDetailScreen() {
 
   useEffect(() => {
     if (!CHAT_WS_BASE || !id) return;
+    // Clear messages when switching trips so we don't show another trip's chat
+    setMessages([]);
     const base = CHAT_WS_BASE.replace(/^http/, 'ws');
     const wsUrl = `${base}/ws/${encodeURIComponent(id)}?user_id=${encodeURIComponent(user?.id ?? '')}&user_name=${encodeURIComponent(userDisplayName)}`;
     const ws = new WebSocket(wsUrl);
@@ -676,13 +679,19 @@ export default function TripDetailScreen() {
                               styles.messageBubble,
                               fromMe ? styles.bubbleUser : styles.bubbleAI,
                             ]}>
-                            <Text
-                              style={[
+                            <MarkdownText
+                              baseStyle={StyleSheet.flatten([
                                 styles.messageText,
                                 fromMe ? styles.messageTextUser : styles.messageTextAI,
-                              ]}>
+                              ])}
+                              codeStyle={
+                                fromMe
+                                  ? { backgroundColor: 'rgba(255,255,255,0.25)' }
+                                  : undefined
+                              }
+                            >
                               {msg.content}
-                            </Text>
+                            </MarkdownText>
                           </View>
                         </View>
                       </Animated.View>
