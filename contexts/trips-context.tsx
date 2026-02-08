@@ -28,6 +28,9 @@ export type ItineraryDay = {
 
 export type Itinerary = ItineraryDay[];
 
+/** Google Places photo attribution (must be shown when displaying cover image). */
+export type CoverAttribution = { displayName?: string; uri?: string };
+
 export type Trip = {
   id: string;
   name: string;
@@ -37,6 +40,7 @@ export type Trip = {
   startingCity?: string;
   status: TripStatus;
   coverImage?: string;
+  coverAttributions?: CoverAttribution[];
   createdBy: string;
   createdAt: number;
   members?: { id: string; name: string; avatar?: string }[];
@@ -62,7 +66,16 @@ const TripsContext = createContext<TripsContextType | null>(null);
 
 let tripIdCounter = 1;
 
-function apiTripToLocal(api: { id: string; name: string; destination: string; status: string; createdBy: string; createdAt: number }): Trip {
+function apiTripToLocal(api: {
+  id: string;
+  name: string;
+  destination: string;
+  status: string;
+  createdBy: string;
+  createdAt: number;
+  coverImage?: string;
+  coverAttributions?: { displayName?: string; uri?: string }[];
+}): Trip {
   return {
     id: api.id,
     name: api.name,
@@ -70,6 +83,8 @@ function apiTripToLocal(api: { id: string; name: string; destination: string; st
     status: api.status as TripStatus,
     createdBy: api.createdBy,
     createdAt: api.createdAt,
+    ...(api.coverImage != null && { coverImage: api.coverImage }),
+    ...(api.coverAttributions != null && { coverAttributions: api.coverAttributions }),
   };
 }
 

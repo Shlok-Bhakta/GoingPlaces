@@ -101,6 +101,11 @@ export function TripCard({
             colors={['transparent', 'rgba(0,0,0,0.6)']}
             style={styles.coverOverlay}
           />
+          {trip.coverImage && trip.coverAttributions && trip.coverAttributions.length > 0 && (
+            <Text style={styles.coverAttribution} numberOfLines={1}>
+              Photo: {trip.coverAttributions.map((a) => a.displayName).filter(Boolean).join(', ') || 'Google'}
+            </Text>
+          )}
         </View>
         <View style={styles.content}>
           <View style={styles.header}>
@@ -174,6 +179,15 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: '60%',
+  },
+  coverAttribution: {
+    position: 'absolute',
+    bottom: 4,
+    left: Spacing.sm,
+    right: Spacing.sm,
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.7)',
   },
   content: {
     flex: 1,

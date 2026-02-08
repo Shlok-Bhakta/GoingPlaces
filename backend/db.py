@@ -1,5 +1,6 @@
 """SQLite persistence for trips, members, chat, join codes, users, trip images, and expenses."""
 
+import json
 import os
 import random
 import sqlite3
@@ -53,6 +54,9 @@ def _migrate_trips_columns(conn: sqlite3.Connection) -> None:
         ("status", "TEXT DEFAULT 'planning'"),
         ("created_by", "TEXT"),
         ("created_at", "TEXT DEFAULT (datetime('now'))"),
+        ("cover_place_id", "TEXT"),
+        ("cover_photo_name", "TEXT"),
+        ("cover_photo_attributions", "TEXT"),
     ]:
         if col not in existing:
             conn.execute(f"ALTER TABLE trips ADD COLUMN {col} {spec}")
@@ -313,19 +317,33 @@ def get_trip(trip_id: str) -> Optional[dict[str, Any]]:
     """Return trip row as dict (createdAt in ms), or None."""
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, name, destination, status, created_by, created_at FROM trips WHERE id = ?",
+            """SELECT id, name, destination, status, created_by, created_at,
+               cover_place_id, cover_photo_name, cover_photo_attributions FROM trips WHERE id = ?""",
             (trip_id,),
         ).fetchone()
     if not row:
         return None
-    return {
-        "id": row["id"],
-        "name": (row["name"] or "").strip() or "Trip",
-        "destination": (row["destination"] or "").strip() or "TBD",
-        "status": (row["status"] or "planning").strip(),
-        "createdBy": row["created_by"] or "",
-        "createdAt": _parse_created_at(row["created_at"]),
+    r = dict(row)  # sqlite3.Row doesn't support .get(); convert for cover fields
+    out = {
+        "id": r["id"],
+        "name": (r["name"] or "").strip() or "Trip",
+        "destination": (r["destination"] or "").strip() or "TBD",
+        "status": (r["status"] or "planning").strip(),
+        "createdBy": r["created_by"] or "",
+        "createdAt": _parse_created_at(r["created_at"]),
     }
+    if r.get("cover_photo_name"):
+        out["coverPlaceId"] = r.get("cover_place_id")
+        out["coverPhotoName"] = r["cover_photo_name"]
+        raw_attr = r.get("cover_photo_attributions")
+        if raw_attr:
+            try:
+                out["coverPhotoAttributions"] = json.loads(raw_attr)
+            except (TypeError, ValueError):
+                out["coverPhotoAttributions"] = []
+        else:
+            out["coverPhotoAttributions"] = []
+    return out
 
 
 def create_trip(
@@ -359,6 +377,30 @@ def create_trip(
     return trip
 
 
+def update_trip_destination(trip_id: str, destination: str) -> None:
+    """Update trip destination (e.g. when itinerary is set)."""
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE trips SET destination = ? WHERE id = ?",
+            ((destination or "TBD").strip(), trip_id),
+        )
+
+
+def set_trip_cover(
+    trip_id: str,
+    place_id: str,
+    photo_name: str,
+    attributions: list[dict[str, Any]],
+) -> None:
+    """Store Google Places photo reference for trip cover (place_id and photo name are OK to store per ToS)."""
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE trips SET cover_place_id = ?, cover_photo_name = ?, cover_photo_attributions = ?
+               WHERE id = ?""",
+            (place_id or None, (photo_name or "").strip() or None, json.dumps(attributions or []), trip_id),
+        )
+
+
 def _register_code_conn(conn: sqlite3.Connection, trip_id: str) -> str:
     """Get or create 4-digit code for trip (caller holds conn)."""
     row = conn.execute(
@@ -390,7 +432,8 @@ def get_trips_for_user(user_id: str) -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
             """
-            SELECT t.id, t.name, t.destination, t.status, t.created_by, t.created_at
+            SELECT t.id, t.name, t.destination, t.status, t.created_by, t.created_at,
+                   t.cover_place_id, t.cover_photo_name, t.cover_photo_attributions
             FROM trips t
             INNER JOIN trip_members m ON m.trip_id = t.id
             WHERE m.user_id = ?
@@ -398,8 +441,10 @@ def get_trips_for_user(user_id: str) -> list[dict[str, Any]]:
             """,
             (user_id,),
         ).fetchall()
-    return [
-        {
+    result = []
+    for row in rows:
+        r = dict(row)  # sqlite3.Row doesn't support .get(); convert for cover fields
+        out = {
             "id": r["id"],
             "name": (r["name"] or "").strip() or "Trip",
             "destination": (r["destination"] or "").strip() or "TBD",
@@ -407,8 +452,19 @@ def get_trips_for_user(user_id: str) -> list[dict[str, Any]]:
             "createdBy": r["created_by"] or "",
             "createdAt": _parse_created_at(r["created_at"]),
         }
-        for r in rows
-    ]
+        if r.get("cover_photo_name"):
+            out["coverPlaceId"] = r.get("cover_place_id")
+            out["coverPhotoName"] = r["cover_photo_name"]
+            raw_attr = r.get("cover_photo_attributions")
+            if raw_attr:
+                try:
+                    out["coverPhotoAttributions"] = json.loads(raw_attr)
+                except (TypeError, ValueError):
+                    out["coverPhotoAttributions"] = []
+            else:
+                out["coverPhotoAttributions"] = []
+        result.append(out)
+    return result
 
 
 def join_trip_by_code(code: str, user_id: str) -> Optional[dict[str, Any]]:

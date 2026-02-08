@@ -477,6 +477,13 @@ function createStyles(colors: typeof Colors.light) {
       backgroundColor: colors.surfaceMuted,
       overflow: 'hidden',
     },
+    albumCoverAttribution: {
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 9,
+      color: colors.textTertiary,
+      marginTop: 2,
+      maxWidth: 96,
+    },
     mentionDropdown: {
       position: 'absolute',
       left: Spacing.md,
@@ -601,6 +608,8 @@ export default function TripDetailScreen() {
 
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Chat');
   const [albumMediaByTripId, setAlbumMediaByTripId] = useState<Record<string, { uri: string; type: 'image' | 'video' }[]>>({});
+  /** Trip cover from Google Places (destination photo); shown first in album with attribution. */
+  const [tripCoverImage, setTripCoverImage] = useState<{ uri: string; attributions: { displayName?: string; uri?: string }[] } | null>(null);
   const [viewingImageIndex, setViewingImageIndex] = useState<number | null>(null);
   const [showJoinCodeModal, setShowJoinCodeModal] = useState(false);
   const [joinCode, setJoinCode] = useState<string | null>(null);
@@ -959,7 +968,7 @@ export default function TripDetailScreen() {
     return list.filter((o) => o.name.toLowerCase().startsWith(f));
   }, [messages, mentionFilter]);
 
-  // Refresh album media
+  // Refresh album media (and trip cover image from Google Places)
   const handleRefreshMedia = async () => {
     if (!id) return;
     setRefreshing(true);
@@ -967,9 +976,12 @@ export default function TripDetailScreen() {
 
     if (base) {
       try {
-        const res = await fetch(`${base}/trips/${encodeURIComponent(id)}/media`);
-        if (res.ok) {
-          const data: { uri: string; type: string }[] = await res.json();
+        const [mediaRes, coverRes] = await Promise.all([
+          fetch(`${base}/trips/${encodeURIComponent(id)}/media`),
+          fetch(`${base}/trips/${encodeURIComponent(id)}/cover-image`).catch(() => null),
+        ]);
+        if (mediaRes.ok) {
+          const data: { uri: string; type: string }[] = await mediaRes.json();
           setAlbumMediaByTripId((prev) => ({
             ...prev,
             [id]: (data || []).map((m) => ({
@@ -977,6 +989,12 @@ export default function TripDetailScreen() {
               type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
             })),
           }));
+        }
+        if (coverRes?.ok) {
+          const cover = await coverRes.json() as { photoUri: string; attributions?: { displayName?: string; uri?: string }[] };
+          setTripCoverImage({ uri: cover.photoUri, attributions: cover.attributions ?? [] });
+        } else {
+          setTripCoverImage(null);
         }
       } catch (error) {
         console.error('Failed to refresh media:', error);
@@ -991,18 +1009,24 @@ export default function TripDetailScreen() {
     const base = (CHAT_WS_BASE || '').replace(/\/$/, '');
 
     if (base) {
-      fetch(`${base}/trips/${encodeURIComponent(id)}/media`)
-        .then((res) => (res.ok ? res.json() : []))
-        .then((data: { uri: string; type: string }[]) => {
+      Promise.all([
+        fetch(`${base}/trips/${encodeURIComponent(id)}/media`).then((res) => (res.ok ? res.json() : [])),
+        fetch(`${base}/trips/${encodeURIComponent(id)}/cover-image`).then((res) => (res.ok ? res.json() : null)).catch(() => null),
+      ])
+        .then(([data, cover]: [ { uri: string; type: string }[], { photoUri: string; attributions?: { displayName?: string; uri?: string }[] } | null ]) => {
           if (cancelled) return;
           setAlbumMediaByTripId((prev) => ({
             ...prev,
             [id]: (data || []).map((m) => ({
-              // Convert relative paths to full URLs
               uri: m.uri.startsWith('http') ? m.uri : `${base}${m.uri}`,
               type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
             })),
           }));
+          if (cover?.photoUri) {
+            setTripCoverImage({ uri: cover.photoUri, attributions: cover.attributions ?? [] });
+          } else {
+            setTripCoverImage(null);
+          }
         })
         .catch(() => {
           if (cancelled) return;
@@ -1015,6 +1039,7 @@ export default function TripDetailScreen() {
               }
             } catch (_) {}
           });
+          setTripCoverImage(null);
         })
         .finally(() => {
           if (!cancelled) albumMediaLoadedRef.current = true;
@@ -1033,6 +1058,7 @@ export default function TripDetailScreen() {
         } catch (_) {}
         albumMediaLoadedRef.current = true;
       });
+      setTripCoverImage(null);
       return () => {
         cancelled = true;
       };
@@ -2167,31 +2193,42 @@ export default function TripDetailScreen() {
             <Text style={styles.albumSectionText}>
               {(() => {
                 const media = albumMediaByTripId[id ?? ''] ?? [];
-                return media.length > 0
-                  ? `This trip has its own album. ${media.length} item${media.length !== 1 ? 's' : ''} in this shared space. Media is not shared with other trips.`
+                const total = media.length + (tripCoverImage ? 1 : 0);
+                return total > 0
+                  ? `This trip has its own album. ${total} item${total !== 1 ? 's' : ''} in this shared space. Media is not shared with other trips.`
                   : 'Add photos and videos above. They stay in this trip only—no sharing between trips.';
               })()}
             </Text>
             {(() => {
               const media = albumMediaByTripId[id ?? ''] ?? [];
-              const imageItems = media.filter((m): m is { uri: string; type: 'image' } => m.type === 'image');
-              if (media.length === 0) return null;
+              const withCover = tripCoverImage
+                ? [{ uri: tripCoverImage.uri, type: 'image' as const, isCover: true, attributions: tripCoverImage.attributions }]
+                : [];
+              const allItems = [...withCover, ...media.map((m) => ({ ...m, isCover: false as const, attributions: [] as { displayName?: string; uri?: string }[] }))];
+              if (allItems.length === 0) return null;
               let imageIndex = 0;
               return (
                 <View style={styles.albumMediaGrid}>
-                  {media.map((item, index) => (
-                    <View key={`${item.uri}-${index}`} style={styles.albumMediaItem}>
+                  {allItems.map((item, index) => (
+                    <View key={item.isCover ? 'cover' : `${item.uri}-${index}`} style={styles.albumMediaItem}>
                       {item.type === 'image' ? (() => {
                           const idx = imageIndex++;
                           return (
-                            <Pressable
-                              style={{ width: 96, height: 96 }}
-                              onPress={() => {
-                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                                setViewingImageIndex(idx);
-                              }}>
-                              <Image source={{ uri: item.uri }} style={{ width: 96, height: 96 }} contentFit="cover" />
-                            </Pressable>
+                            <View>
+                              <Pressable
+                                style={{ width: 96, height: 96 }}
+                                onPress={() => {
+                                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                  setViewingImageIndex(idx);
+                                }}>
+                                <Image source={{ uri: item.uri }} style={{ width: 96, height: 96 }} contentFit="cover" />
+                              </Pressable>
+                              {item.isCover && item.attributions && item.attributions.length > 0 && (
+                                <Text style={styles.albumCoverAttribution} numberOfLines={1}>
+                                  Photo: {item.attributions.map((a) => a.displayName).filter(Boolean).join(', ') || 'Google'}
+                                </Text>
+                              )}
+                            </View>
                           );
                         })() : (
                         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
@@ -2216,8 +2253,10 @@ export default function TripDetailScreen() {
         <GestureHandlerRootView style={{ flex: 1 }}>
           <ImageViewerOverlay
             imageUris={(() => {
+              const coverUris = tripCoverImage ? [tripCoverImage.uri] : [];
               const media = albumMediaByTripId[id ?? ''] ?? [];
-              return media.filter((m): m is { uri: string; type: 'image' } => m.type === 'image').map((m) => m.uri);
+              const imageUris = media.filter((m): m is { uri: string; type: 'image' } => m.type === 'image').map((m) => m.uri);
+              return [...coverUris, ...imageUris];
             })()}
             initialPage={viewingImageIndex ?? 0}
             onClose={() => setViewingImageIndex(null)}
